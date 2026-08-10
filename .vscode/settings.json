@@ -1,0 +1,6 @@
+{
+  "C_Cpp.default.configurationProvider": "",
+  "C_Cpp.default.compilerPath": "/opt/homebrew/bin/arm-none-eabi-g++",
+  "C_Cpp.default.cppStandard": "gnu++17",
+  "C_Cpp.default.cStandard": "c17"
+}

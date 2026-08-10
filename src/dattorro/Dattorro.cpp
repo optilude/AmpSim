@@ -298,7 +298,7 @@ Dattorro::Dattorro(const float initMaxSampleRate,
     sampleRate = initMaxSampleRate;
     dattorroScaleFactor = sampleRate / dattorroSampleRate;
 
-    preDelay = InterpDelay(192010, 0.0f);
+    preDelay = InterpDelay(9600, 0.0f);  // 200ms max @ 48kHz (was 192010 = 4 sec)
 
     // // 22000 goes outside the range fo the linear function.
     // // inputLpf = OnePoleLPFilter(22000.0);

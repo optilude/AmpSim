@@ -12,19 +12,19 @@ public:
         
         // Bass: Low shelf at 100Hz
         bassFilter_.Init(sampleRate);
-        bassFilter_.SetFreq(100.0f);
+        bassFilter_.SetFreq(BASS_FREQ);
         bassFilter_.SetRes(0.707f);
         bassFilter_.SetDrive(0.0f);
         
         // Mid: Peak at 1kHz
         midFilter_.Init(sampleRate);
-        midFilter_.SetFreq(1000.0f);
+        midFilter_.SetFreq(MID_FREQ);
         midFilter_.SetRes(1.0f);  // Higher Q for peak
         midFilter_.SetDrive(0.0f);
         
         // Treble: High shelf at 4kHz
         trebleFilter_.Init(sampleRate);
-        trebleFilter_.SetFreq(4000.0f);
+        trebleFilter_.SetFreq(TREBLE_FREQ);
         trebleFilter_.SetRes(0.707f);
         trebleFilter_.SetDrive(0.0f);
         
@@ -35,15 +35,15 @@ public:
     
     void SetBass(float gain) {
         // Map -1 to +1 to ±12dB
-        bassGain_ = gain * 12.0f;
+        bassGain_ = gain * EQ_RANGE_DB;
     }
     
     void SetMid(float gain) {
-        midGain_ = gain * 12.0f;
+        midGain_ = gain * EQ_RANGE_DB;
     }
     
     void SetTreble(float gain) {
-        trebleGain_ = gain * 12.0f;
+        trebleGain_ = gain * EQ_RANGE_DB;
     }
     
     float Process(float in) {

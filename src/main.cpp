@@ -9,6 +9,7 @@
 #include "gain_stage.h"
 #include "guitar_eq.h"
 #include "constants.h"
+#include "helpers.h"
 #include <string.h>
 #include <cmath>
 
@@ -107,10 +108,11 @@ void UpdateDisplay() {
     
     // Line 4: Reverb mix, EQ settings
     hw.display.SetCursor(0, 42);
-    int revPct = (int)(currentSettings.reverbMix * 100.0f);
-    int bassDb = (int)(currentSettings.bass * 12.0f);
-    int midDb = (int)(currentSettings.mid * 12.0f);
-    int trebDb = (int)(currentSettings.treble * 12.0f);
+    int revPct = std::max(0, std::min(100, (int)(currentSettings.reverbMix * 100.0f)));
+    // Calculate actual dB values based on knob transformation
+    int bassDb = (int)((currentSettings.bass - 0.5f) * 2.0f * EQ_RANGE_DB);
+    int midDb = (int)((currentSettings.mid - 0.5f) * 2.0f * EQ_RANGE_DB);
+    int trebDb = (int)((currentSettings.treble - 0.5f) * 2.0f * EQ_RANGE_DB);
     sprintf(line, "Rev:%3d%% EQ:B%+2d M%+2d T%+2d", revPct, bassDb, midDb, trebDb);
     hw.display.WriteString(line, Font_6x8, true);
     
@@ -203,6 +205,8 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 }
 
 void HandleEncoderMovement() {
+    if (NAM_MODEL_COUNT == 0) return;  // No models to browse
+    
     int32_t inc = hw.encoders[0].Increment();
     
     if (inc != 0) {
@@ -268,23 +272,23 @@ void HandleKnobs() {
     
     // Knob 0: Input gain
     float knob0 = hw.knobs[0].Value();
-    if (std::abs(knob0 - currentSettings.inputGain) > 0.01f) {
+    if (std::abs(knob0 - currentSettings.inputGain) > KNOB_DEADBAND) {
         currentSettings.inputGain = knob0;
-        inputGain.SetGain(knob0 - 0.5f);
+        inputGain.SetGain(KnobToNormalized(knob0));  // -1 to +1 for ±20dB
         changed = true;
     }
     
     // Knob 1: Output volume
     float knob1 = hw.knobs[1].Value();
-    if (std::abs(knob1 - currentSettings.outputVolume) > 0.01f) {
+    if (std::abs(knob1 - currentSettings.outputVolume) > KNOB_DEADBAND) {
         currentSettings.outputVolume = knob1;
-        outputVolume.SetGain(knob1 - 0.5f);
+        outputVolume.SetGain(KnobToNormalized(knob1));  // -1 to +1 for ±20dB
         changed = true;
     }
     
     // Knob 2: Reverb mix
     float knob2 = hw.knobs[2].Value();
-    if (std::abs(knob2 - currentSettings.reverbMix) > 0.01f) {
+    if (std::abs(knob2 - currentSettings.reverbMix) > KNOB_DEADBAND) {
         currentSettings.reverbMix = knob2;
         reverbProcessor.setMix(knob2);
         changed = true;
@@ -292,25 +296,25 @@ void HandleKnobs() {
     
     // Knob 3: Bass
     float knob3 = hw.knobs[3].Value();
-    if (std::abs(knob3 - currentSettings.bass) > 0.01f) {
+    if (std::abs(knob3 - currentSettings.bass) > KNOB_DEADBAND) {
         currentSettings.bass = knob3;
-        eq.SetBass((knob3 - 0.5f) * 2.0f);
+        eq.SetBass(KnobToNormalized(knob3));  // -1 to +1 for ±12dB
         changed = true;
     }
     
     // Knob 4: Mid
     float knob4 = hw.knobs[4].Value();
-    if (std::abs(knob4 - currentSettings.mid) > 0.01f) {
+    if (std::abs(knob4 - currentSettings.mid) > KNOB_DEADBAND) {
         currentSettings.mid = knob4;
-        eq.SetMid((knob4 - 0.5f) * 2.0f);
+        eq.SetMid(KnobToNormalized(knob4));  // -1 to +1 for ±12dB
         changed = true;
     }
     
     // Knob 5: Treble
     float knob5 = hw.knobs[5].Value();
-    if (std::abs(knob5 - currentSettings.treble) > 0.01f) {
+    if (std::abs(knob5 - currentSettings.treble) > KNOB_DEADBAND) {
         currentSettings.treble = knob5;
-        eq.SetTreble((knob5 - 0.5f) * 2.0f);
+        eq.SetTreble(KnobToNormalized(knob5));  // -1 to +1 for ±12dB
         changed = true;
     }
     
@@ -349,12 +353,12 @@ int main(void) {
     reverbProcessor.init(hw.AudioSampleRate());
     
     // Apply saved settings
-    inputGain.SetGain(currentSettings.inputGain - 0.5f);
-    outputVolume.SetGain(currentSettings.outputVolume - 0.5f);
+    inputGain.SetGain(KnobToNormalized(currentSettings.inputGain));
+    outputVolume.SetGain(KnobToNormalized(currentSettings.outputVolume));
     reverbProcessor.setMix(currentSettings.reverbMix);
-    eq.SetBass((currentSettings.bass - 0.5f) * 2.0f);
-    eq.SetMid((currentSettings.mid - 0.5f) * 2.0f);
-    eq.SetTreble((currentSettings.treble - 0.5f) * 2.0f);
+    eq.SetBass(KnobToNormalized(currentSettings.bass));
+    eq.SetMid(KnobToNormalized(currentSettings.mid));
+    eq.SetTreble(KnobToNormalized(currentSettings.treble));
     
     // Load last used model
     if (NAM_MODEL_COUNT == 0) {

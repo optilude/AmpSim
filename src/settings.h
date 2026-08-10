@@ -1,5 +1,6 @@
 #pragma once
 #include "daisy.h"
+#include "constants.h"
 
 struct PersistentSettings {
     int32_t modelIndex;
@@ -28,12 +29,12 @@ struct PersistentSettings {
         return modelIndex == other.modelIndex
             && namEnabled == other.namEnabled
             && reverbEnabled == other.reverbEnabled
-            && std::abs(inputGain - other.inputGain) < 0.01f
-            && std::abs(outputVolume - other.outputVolume) < 0.01f
-            && std::abs(reverbMix - other.reverbMix) < 0.01f
-            && std::abs(bass - other.bass) < 0.01f
-            && std::abs(mid - other.mid) < 0.01f
-            && std::abs(treble - other.treble) < 0.01f;
+            && std::abs(inputGain - other.inputGain) < KNOB_DEADBAND
+            && std::abs(outputVolume - other.outputVolume) < KNOB_DEADBAND
+            && std::abs(reverbMix - other.reverbMix) < KNOB_DEADBAND
+            && std::abs(bass - other.bass) < KNOB_DEADBAND
+            && std::abs(mid - other.mid) < KNOB_DEADBAND
+            && std::abs(treble - other.treble) < KNOB_DEADBAND;
     }
     
     bool operator!=(const PersistentSettings& other) const {

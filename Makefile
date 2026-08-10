@@ -3,18 +3,54 @@
 
 # Project Name and Sources
 TARGET = AmpSim
-APP_SRC = src/main.cpp
+
+# Enable NAM A2 fast path optimization and C++17
+CPP_STANDARD = -std=gnu++17
+CXXFLAGS += -DNAM_ENABLE_A2_FAST
 
 # Sources
-CPP_SOURCES = $(APP_SRC) \
-              hardware/guitar_pedal_125b.cpp
+CPP_SOURCES = src/main.cpp \
+              src/nam_processor.cpp \
+              hardware/guitar_pedal_125b.cpp \
+              NeuralAmpModelerCore/NAM/activations.cpp \
+              NeuralAmpModelerCore/NAM/container.cpp \
+              NeuralAmpModelerCore/NAM/conv1d.cpp \
+              NeuralAmpModelerCore/NAM/convnet.cpp \
+              NeuralAmpModelerCore/NAM/dsp.cpp \
+              NeuralAmpModelerCore/NAM/get_dsp.cpp \
+              NeuralAmpModelerCore/NAM/linear.cpp \
+              NeuralAmpModelerCore/NAM/lstm.cpp \
+              NeuralAmpModelerCore/NAM/nam_file.cpp \
+              NeuralAmpModelerCore/NAM/ring_buffer.cpp \
+              NeuralAmpModelerCore/NAM/util.cpp \
+              NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
+              NeuralAmpModelerCore/NAM/wavenet/model.cpp \
+              NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp
 
 # Include paths
-C_INCLUDES = -Ihardware
+C_INCLUDES = -Ihardware \
+             -INeuralAmpModelerCore \
+             -INeuralAmpModelerCore/Dependencies/eigen \
+             -INeuralAmpModelerCore/Dependencies/nlohmann
 
 # Library Locations
 LIBDAISY_DIR = libDaisy
 DAISYSP_DIR = DaisySP
+
+# Use Daisy bootloader: application is written to QSPI flash via DFU,
+# then copied to SRAM at boot. This enables programming both firmware
+# and data in a single DFU flash operation.
+APP_TYPE = BOOT_SRAM
+
+# Use the 2000ms grace period bootloader
+BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
+
+# Core location, and generic Makefile
+SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
+include $(SYSTEM_FILES_DIR)/Makefile
+
+# Remove -fno-exceptions from CPPFLAGS to enable exceptions for NeuralAmpModelerCore
+CPPFLAGS := $(filter-out -fno-exceptions,$(CPPFLAGS))
 
 # Use Daisy bootloader: application is written to QSPI flash via DFU,
 # then copied to SRAM at boot. This enables programming both firmware

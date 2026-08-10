@@ -1,44 +1,46 @@
 // AmpSim - Guitar Amp Simulator based on Daisy Seed
-// Minimal firmware to test LCD display and input handling
+// NAM A2 processing implementation
 
 #include "guitar_pedal_125b.h"
+#include "nam_processor.h"
+#include "model_data.h"
 #include <string.h>
 
 using namespace multifs;
 
 GuitarPedal125B hw;
 
-int encoderPosition = 0;
-int knobValues[6] = {0, 0, 0, 0, 0, 0};
-bool footswitchStates[2] = {false, false};
+NAMProcessor namProcessor;
+int currentModelIndex = 0;
+bool namEnabled = false;
 
 void UpdateDisplay() {
     hw.display.Fill(false);
     
     hw.display.SetCursor(0, 0);
-    hw.display.WriteString("AmpSim Test", Font_7x10, true);
+    hw.display.WriteString("AmpSim NAM A2", Font_7x10, true);
     
     hw.display.SetCursor(0, 12);
     char line[32];
-    sprintf(line, "Encoder: %d", encoderPosition);
-    hw.display.WriteString(line, Font_6x8, true);
     
-    hw.display.SetCursor(0, 22);
-    hw.display.WriteString("Knobs:", Font_6x8, true);
-    
-    for (int i = 0; i < 6; i++) {
-        int y = 32 + (i / 3) * 10;
-        int x = (i % 3) * 43;
-        hw.display.SetCursor(x, y);
-        sprintf(line, "K%d:%3d", i + 1, knobValues[i]);
+    if (namProcessor.isModelLoaded()) {
+        sprintf(line, "Model: %s", nam_models[currentModelIndex].model_name);
         hw.display.WriteString(line, Font_6x8, true);
+        
+        hw.display.SetCursor(0, 22);
+        sprintf(line, "Variant: %s", nam_models[currentModelIndex].variant_name);
+        hw.display.WriteString(line, Font_6x8, true);
+        
+        hw.display.SetCursor(0, 32);
+        sprintf(line, "NAM: %s", namEnabled ? "ON" : "OFF");
+        hw.display.WriteString(line, Font_6x8, true);
+    } else {
+        hw.display.WriteString("No model loaded", Font_6x8, true);
     }
     
     hw.display.SetCursor(0, 54);
-    sprintf(line, "FS1:%c FS2:%c", 
-            footswitchStates[0] ? 'X' : '_',
-            footswitchStates[1] ? 'X' : '_');
-    hw.display.WriteString(line, Font_7x10, true);
+    sprintf(line, "FS1: Toggle NAM");
+    hw.display.WriteString(line, Font_6x8, true);
     
     hw.display.Update();
 }
@@ -50,8 +52,15 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     hw.ProcessDigitalControls();
     
     for (size_t i = 0; i < size; i++) {
-        out[0][i] = in[0][i];
-        out[1][i] = in[0][i];
+        float input = in[0][i];
+        float output = input;
+        
+        if (namEnabled && namProcessor.isModelLoaded()) {
+            namProcessor.process(&input, &output, 1);
+        }
+        
+        out[0][i] = output;
+        out[1][i] = output;
     }
 }
 
@@ -65,43 +74,40 @@ int main(void) {
     hw.display.Update();
     hw.DelayMs(500);
     
-    hw.SetLed(0, 1.0f);
-    hw.SetLed(1, 0.0f);
-    hw.UpdateLeds();
-    hw.DelayMs(500);
-    
-    hw.SetLed(0, 0.0f);
-    hw.SetLed(1, 1.0f);
-    hw.UpdateLeds();
-    hw.DelayMs(500);
+    // Load first NAM model
+    if (NAM_MODEL_COUNT > 0) {
+        hw.display.SetCursor(0, 0);
+        hw.display.WriteString("Loading NAM...", Font_7x10, true);
+        hw.display.Update();
+        
+        bool loaded = namProcessor.loadModel(nam_models[0].model_json);
+        
+        if (loaded) {
+            hw.SetLed(0, 1.0f);
+            hw.SetLed(1, 0.0f);
+            namEnabled = true;
+        } else {
+            hw.SetLed(0, 0.0f);
+            hw.SetLed(1, 1.0f);
+        }
+        hw.UpdateLeds();
+        hw.DelayMs(500);
+    }
     
     while(1) {
         hw.ProcessAllControls();
         
-        int32_t encoderInc = hw.encoders[0].Increment();
-        if (encoderInc != 0) {
-            encoderPosition += encoderInc;
-            
-            hw.SetLed(0, encoderInc > 0 ? 1.0f : 0.0f);
-            hw.SetLed(1, encoderInc < 0 ? 1.0f : 0.0f);
+        // Footswitch 1: Toggle NAM on/off
+        if (hw.switches[0].RisingEdge()) {
+            namEnabled = !namEnabled;
+            hw.SetLed(0, namEnabled ? 1.0f : 0.0f);
+            hw.SetLed(1, namEnabled ? 0.0f : 1.0f);
         }
         
-        if (hw.encoders[0].RisingEdge()) {
-            hw.SetLed(0, 1.0f);
-            hw.SetLed(1, 1.0f);
-            encoderPosition = 0;
-        }
-        
-        for (int i = 0; i < 6; i++) {
-            float value = hw.GetKnobValue(i);
-            knobValues[i] = (int)(value * 100.0f);
-        }
-        
-        for (int i = 0; i < 2; i++) {
-            if (hw.switches[i].RisingEdge()) {
-                footswitchStates[i] = !footswitchStates[i];
-                hw.SetLed(i, footswitchStates[i] ? 1.0f : 0.0f);
-            }
+        // Footswitch 2: Cycle through models
+        if (hw.switches[1].RisingEdge()) {
+            currentModelIndex = (currentModelIndex + 1) % NAM_MODEL_COUNT;
+            namProcessor.loadModel(nam_models[currentModelIndex].model_json);
         }
         
         hw.UpdateLeds();

@@ -1,0 +1,59 @@
+// Minimal no-op <mutex> shadow for the bare-metal Daisy build.
+//
+// The arm-none-eabi toolchain is built with thread model "single" and does not
+// provide std::mutex (no gthreads). The NAM engine uses std::mutex only on the
+// single-threaded model-load path (a version-support registry and the unused
+// slimmable container) — never in the real-time audio path. This header is put
+// first on the include path so `#include <mutex>` resolves here, giving no-op
+// lock types. Safe because the firmware loads the model from one core/thread.
+#pragma once
+
+namespace std
+{
+
+class mutex
+{
+public:
+  constexpr mutex() noexcept = default;
+  mutex(const mutex&) = delete;
+  mutex& operator=(const mutex&) = delete;
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+};
+
+class recursive_mutex
+{
+public:
+  constexpr recursive_mutex() noexcept = default;
+  recursive_mutex(const recursive_mutex&) = delete;
+  recursive_mutex& operator=(const recursive_mutex&) = delete;
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+};
+
+template <class Mutex>
+class lock_guard
+{
+public:
+  explicit lock_guard(Mutex&) noexcept {}
+  lock_guard(const lock_guard&) = delete;
+  lock_guard& operator=(const lock_guard&) = delete;
+  ~lock_guard() = default;
+};
+
+template <class Mutex>
+class unique_lock
+{
+public:
+  unique_lock() noexcept = default;
+  explicit unique_lock(Mutex&) noexcept {}
+  unique_lock(const unique_lock&) = delete;
+  unique_lock& operator=(const unique_lock&) = delete;
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+};
+
+} // namespace std

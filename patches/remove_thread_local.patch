@@ -1,0 +1,14 @@
+diff --git a/NAM/dsp.cpp b/NAM/dsp.cpp
+index a89c021..9f03df4 100644
+--- a/NAM/dsp.cpp
++++ b/NAM/dsp.cpp
+@@ -17,7 +17,8 @@ constexpr const long _INPUT_BUFFER_SAFETY_FACTOR = 32;
+ namespace
+ {
+ 
+-thread_local bool gPrewarmOnResetDefault = true;
++// Changed from thread_local to regular global for bare-metal single-threaded systems
++bool gPrewarmOnResetDefault = true;
+ 
+ } // namespace
+ 

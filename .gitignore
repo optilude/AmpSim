@@ -9,3 +9,8 @@ build/
 *.su
 *.i
 *.s
+
+# Spurious files from Daisy Makefile bug (see Makefile line 51-54)
+-fasm
+-fexceptions
+-finline

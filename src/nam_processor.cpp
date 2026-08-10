@@ -24,6 +24,9 @@ bool NAMProcessor::loadModel(const std::string& modelJson)
         model = nam::get_dsp(config, returnedConfig);
         
         if (model) {
+            // Initialize model with sample rate and max buffer size
+            // Max buffer size of 256 is typical for real-time audio
+            model->Reset(sampleRate, 256);
             modelLoaded = true;
             return true;
         }

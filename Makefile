@@ -4,9 +4,8 @@
 # Project Name and Sources
 TARGET = AmpSim
 
-# Enable NAM A2 fast path optimization and C++17
+# Enable NAM A2 fast path optimization, bare-metal support, and C++17
 CPP_STANDARD = -std=gnu++17
-CXXFLAGS += -DNAM_ENABLE_A2_FAST
 
 # Sources
 CPP_SOURCES = src/main.cpp \
@@ -20,15 +19,15 @@ CPP_SOURCES = src/main.cpp \
               NeuralAmpModelerCore/NAM/get_dsp.cpp \
               NeuralAmpModelerCore/NAM/linear.cpp \
               NeuralAmpModelerCore/NAM/lstm.cpp \
-              NeuralAmpModelerCore/NAM/nam_file.cpp \
               NeuralAmpModelerCore/NAM/ring_buffer.cpp \
               NeuralAmpModelerCore/NAM/util.cpp \
               NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
               NeuralAmpModelerCore/NAM/wavenet/model.cpp \
               NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp
 
-# Include paths
-C_INCLUDES = -Ihardware \
+# Include paths (compat first to shadow std::mutex)
+C_INCLUDES = -Iinclude/compat \
+             -Ihardware \
              -INeuralAmpModelerCore \
              -INeuralAmpModelerCore/Dependencies/eigen \
              -INeuralAmpModelerCore/Dependencies/nlohmann
@@ -38,9 +37,9 @@ LIBDAISY_DIR = libDaisy
 DAISYSP_DIR = DaisySP
 
 # Use Daisy bootloader: application is written to QSPI flash via DFU,
-# then copied to SRAM at boot. This enables programming both firmware
-# and data in a single DFU flash operation.
-APP_TYPE = BOOT_SRAM
+# then runs from QSPI flash (not copied to SRAM).
+# Required because NAM + Eigen + JSON libraries are too large for SRAM.
+APP_TYPE = BOOT_QSPI
 
 # Use the 2000ms grace period bootloader
 BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
@@ -49,20 +48,18 @@ BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
 
-# Remove -fno-exceptions from CPPFLAGS to enable exceptions for NeuralAmpModelerCore
+# Fix Daisy Makefile bug: dependency flags create spurious files
+# Daisy sets -MF"$(@:%.o=%.d)" in global CPPFLAGS, which expands to -MF""
+# outside of build rules, causing GCC to create files named after the next flag
+# The dependency generation is already handled in the pattern rules, so remove it here
+CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
+
+# Enable exceptions for NeuralAmpModelerCore (required even in bare-metal fork)
 CPPFLAGS := $(filter-out -fno-exceptions,$(CPPFLAGS))
+CPPFLAGS += -fexceptions
 
-# Use Daisy bootloader: application is written to QSPI flash via DFU,
-# then copied to SRAM at boot. This enables programming both firmware
-# and data in a single DFU flash operation.
-APP_TYPE = BOOT_SRAM
-
-# Use the 2000ms grace period bootloader
-BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
-
-# Core location, and generic Makefile
-SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
-include $(SYSTEM_FILES_DIR)/Makefile
+# Add NAM-specific defines
+CPPFLAGS += -DNAM_ENABLE_A2_FAST=1 -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 -DNAM_SAMPLE_FLOAT=1 -DNAM_USE_INLINE_GEMM=1
 
 # Override libDaisy's `program` target to flash firmware directly to QSPI
 # via the STLINK debug probe.

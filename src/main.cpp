@@ -1,96 +1,288 @@
 // AmpSim - Guitar Amp Simulator based on Daisy Seed
-// NAM A2 processing with Dattorro plate reverb
+// NAM A2 processing with Dattorro plate reverb and full control scheme
 
 #include "guitar_pedal_125b.h"
 #include "nam_processor.h"
 #include "reverb_processor.h"
 #include "model_data.h"
+#include "settings.h"
+#include "gain_stage.h"
+#include "guitar_eq.h"
 #include <string.h>
+#include <cmath>
 
 using namespace multifs;
 
+// Hardware
 GuitarPedal125B hw;
 
+// DSP Components
 NAMProcessor namProcessor;
 ReverbProcessor reverbProcessor;
+GainStage inputGain;
+GainStage outputVolume;
+GuitarEQ eq;
 
-int currentModelIndex = 0;
-bool namEnabled = false;
-bool reverbEnabled = true;
+// State Management
+SettingsManager settings;
+PersistentSettings currentSettings;
 
-// Reverb parameters (can be controlled by knobs)
-float reverbMix = 0.3f;
-float reverbDecay = 0.8f;
+// Model browsing state
+int previewModelIndex = 0;
+bool isPreviewingModel = false;
+uint32_t previewStartTime = 0;
+const uint32_t PREVIEW_TIMEOUT_MS = 10000;
+
+// Save debouncing
+uint32_t lastSettingsChange = 0;
+bool settingsDirty = false;
+const uint32_t SAVE_DELAY_MS = 2000;
+
+void SaveSettingsDebounced() {
+    settingsDirty = true;
+    lastSettingsChange = daisy::System::GetNow();
+}
 
 void UpdateDisplay() {
     hw.display.Fill(false);
     
     hw.display.SetCursor(0, 0);
-    hw.display.WriteString("AmpSim NAM A2", Font_7x10, true);
-    
-    hw.display.SetCursor(0, 12);
     char line[32];
     
-    if (namProcessor.isModelLoaded()) {
-        sprintf(line, "Model: %s", nam_models[currentModelIndex].model_name);
-        hw.display.WriteString(line, Font_6x8, true);
-        
-        hw.display.SetCursor(0, 22);
-        sprintf(line, "Variant: %s", nam_models[currentModelIndex].variant_name);
-        hw.display.WriteString(line, Font_6x8, true);
-        
-        hw.display.SetCursor(0, 32);
-        sprintf(line, "NAM: %s  REV: %s", 
-                namEnabled ? "ON" : "OFF",
-                reverbEnabled ? "ON" : "OFF");
-        hw.display.WriteString(line, Font_6x8, true);
+    // Line 0: Model name
+    if (isPreviewingModel) {
+        sprintf(line, "-> %s", nam_models[previewModelIndex].model_name);
     } else {
-        hw.display.WriteString("No model loaded", Font_6x8, true);
+        sprintf(line, "%s", nam_models[currentSettings.modelIndex].model_name);
+    }
+    hw.display.WriteString(line, Font_7x10, true);
+    
+    // Line 1: Variant name
+    hw.display.SetCursor(0, 12);
+    if (isPreviewingModel) {
+        sprintf(line, "   %s", nam_models[previewModelIndex].variant_name);
+    } else {
+        sprintf(line, "%s", nam_models[currentSettings.modelIndex].variant_name);
+    }
+    hw.display.WriteString(line, Font_6x8, true);
+    
+    // Line 2: NAM/Reverb status
+    hw.display.SetCursor(0, 22);
+    sprintf(line, "[NAM:%s] [REV:%s]",
+            currentSettings.namEnabled ? "ON " : "OFF",
+            currentSettings.reverbEnabled ? "ON " : "OFF");
+    hw.display.WriteString(line, Font_6x8, true);
+    
+    // Line 3: Input/Output levels
+    hw.display.SetCursor(0, 32);
+    float inDb = inputGain.GetGainDb();
+    float outDb = outputVolume.GetGainDb();
+    sprintf(line, "In:%+5.1fdB Out:%+5.1fdB", inDb, outDb);
+    hw.display.WriteString(line, Font_6x8, true);
+    
+    // Line 4: Reverb mix, EQ settings
+    hw.display.SetCursor(0, 42);
+    int revPct = (int)(currentSettings.reverbMix * 100.0f);
+    int bassDb = (int)(currentSettings.bass * 12.0f);
+    int midDb = (int)(currentSettings.mid * 12.0f);
+    int trebDb = (int)(currentSettings.treble * 12.0f);
+    sprintf(line, "Rev:%3d%% EQ:B%+2d M%+2d T%+2d", revPct, bassDb, midDb, trebDb);
+    hw.display.WriteString(line, Font_6x8, true);
+    
+    // Line 5: Encoder instruction
+    hw.display.SetCursor(0, 52);
+    if (isPreviewingModel) {
+        hw.display.WriteString("Click to load, or wait", Font_6x8, true);
+    } else {
+        hw.display.WriteString("FS1:Rev FS2:NAM Enc:Model", Font_6x8, true);
     }
     
-    hw.display.SetCursor(0, 44);
-    sprintf(line, "Mix: %.1f  Decay: %.1f", reverbMix, reverbDecay);
-    hw.display.WriteString(line, Font_6x8, true);
-    
-    hw.display.SetCursor(0, 54);
-    sprintf(line, "FS1:NAM FS2:Model FS3:Rev");
-    hw.display.WriteString(line, Font_6x8, true);
-    
     hw.display.Update();
+}
+
+void LoadModel(int index) {
+    hw.display.Fill(false);
+    hw.display.SetCursor(0, 0);
+    hw.display.WriteString("Loading...", Font_7x10, true);
+    hw.display.Update();
+    
+    namProcessor.loadModel(nam_models[index].model_json);
+    currentSettings.modelIndex = index;
+    SaveSettingsDebounced();
 }
 
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
                    size_t size) {
     hw.ProcessAnalogControls();
-    hw.ProcessDigitalControls();
     
     for (size_t i = 0; i < size; i++) {
         float input = in[0][i];
-        float namOutput = input;
+        float output = input;
         
-        // Process through NAM model
-        if (namEnabled && namProcessor.isModelLoaded()) {
-            namProcessor.process(&input, &namOutput, 1);
-        }
-        
-        // Process through reverb (mono in, stereo out)
-        float reverbL = 0.0f;
-        float reverbR = 0.0f;
-        
-        if (reverbEnabled) {
-            reverbProcessor.process(namOutput, &reverbL, &reverbR);
+        if (currentSettings.namEnabled && namProcessor.isModelLoaded()) {
+            // Input gain
+            output = inputGain.Process(input);
             
-            // Mix dry and wet signals
-            float dryMix = reverbProcessor.getDryMix();
-            float wetMix = reverbProcessor.getWetMix();
+            // NAM processing
+            namProcessor.process(&output, &output, 1);
             
-            out[0][i] = namOutput * dryMix + reverbL * wetMix;
-            out[1][i] = namOutput * dryMix + reverbR * wetMix;
+            // EQ
+            output = eq.Process(output);
+            
+            // Reverb
+            if (currentSettings.reverbEnabled) {
+                float reverbL, reverbR;
+                reverbProcessor.process(output, &reverbL, &reverbR);
+                
+                float dryMix = reverbProcessor.getDryMix();
+                float wetMix = reverbProcessor.getWetMix();
+                
+                output = output * dryMix + reverbL * wetMix;
+                out[0][i] = outputVolume.Process(output);
+                out[1][i] = outputVolume.Process(output * dryMix + reverbR * wetMix);
+            } else {
+                // No reverb
+                out[0][i] = outputVolume.Process(output);
+                out[1][i] = out[0][i];
+            }
         } else {
-            // No reverb - just output NAM signal (mono to stereo)
-            out[0][i] = namOutput;
-            out[1][i] = namOutput;
+            // NAM bypassed - should be handled by true bypass relay
+            out[0][i] = input;
+            out[1][i] = input;
+        }
+    }
+}
+
+void HandleEncoderMovement() {
+    int32_t inc = hw.encoders[0].Increment();
+    
+    if (inc != 0) {
+        int newIndex = previewModelIndex + inc;
+        
+        // Wrap around
+        if (newIndex < 0) newIndex = NAM_MODEL_COUNT - 1;
+        if (newIndex >= NAM_MODEL_COUNT) newIndex = 0;
+        
+        previewModelIndex = newIndex;
+        isPreviewingModel = true;
+        previewStartTime = daisy::System::GetNow();
+    }
+}
+
+void HandleEncoderClick() {
+    if (hw.encoders[0].RisingEdge()) {
+        if (isPreviewingModel) {
+            // Load the previewed model
+            LoadModel(previewModelIndex);
+            isPreviewingModel = false;
+        }
+    }
+}
+
+void CheckPreviewTimeout() {
+    if (isPreviewingModel) {
+        uint32_t now = daisy::System::GetNow();
+        if (now - previewStartTime > PREVIEW_TIMEOUT_MS) {
+            // Revert to current model
+            previewModelIndex = currentSettings.modelIndex;
+            isPreviewingModel = false;
+        }
+    }
+}
+
+void HandleFootswitches() {
+    // FS1 (Left): Reverb on/off
+    if (hw.switches[0].RisingEdge()) {
+        currentSettings.reverbEnabled = !currentSettings.reverbEnabled;
+        hw.SetLed(0, currentSettings.reverbEnabled ? 1.0f : 0.0f);
+        hw.UpdateLeds();
+        SaveSettingsDebounced();
+    }
+    
+    // FS2 (Right): NAM on/off (controls true bypass)
+    if (hw.switches[1].RisingEdge()) {
+        currentSettings.namEnabled = !currentSettings.namEnabled;
+        hw.SetLed(1, currentSettings.namEnabled ? 1.0f : 0.0f);
+        hw.UpdateLeds();
+        
+        // Mute before switching relay
+        hw.SetAudioMute(true);
+        hw.DelayMs(10);
+        
+        // Switch relay
+        hw.SetAudioBypass(!currentSettings.namEnabled);
+        
+        // Unmute
+        hw.DelayMs(10);
+        hw.SetAudioMute(false);
+        
+        SaveSettingsDebounced();
+    }
+}
+
+void HandleKnobs() {
+    bool changed = false;
+    
+    // Knob 0: Input gain
+    float knob0 = hw.knobs[0].Value();
+    if (std::abs(knob0 - currentSettings.inputGain) > 0.01f) {
+        currentSettings.inputGain = knob0;
+        inputGain.SetGain(knob0 - 0.5f);
+        changed = true;
+    }
+    
+    // Knob 1: Output volume
+    float knob1 = hw.knobs[1].Value();
+    if (std::abs(knob1 - currentSettings.outputVolume) > 0.01f) {
+        currentSettings.outputVolume = knob1;
+        outputVolume.SetGain(knob1 - 0.5f);
+        changed = true;
+    }
+    
+    // Knob 2: Reverb mix
+    float knob2 = hw.knobs[2].Value();
+    if (std::abs(knob2 - currentSettings.reverbMix) > 0.01f) {
+        currentSettings.reverbMix = knob2;
+        reverbProcessor.setMix(knob2);
+        changed = true;
+    }
+    
+    // Knob 3: Bass
+    float knob3 = hw.knobs[3].Value();
+    if (std::abs(knob3 - currentSettings.bass) > 0.01f) {
+        currentSettings.bass = knob3;
+        eq.SetBass((knob3 - 0.5f) * 2.0f);
+        changed = true;
+    }
+    
+    // Knob 4: Mid
+    float knob4 = hw.knobs[4].Value();
+    if (std::abs(knob4 - currentSettings.mid) > 0.01f) {
+        currentSettings.mid = knob4;
+        eq.SetMid((knob4 - 0.5f) * 2.0f);
+        changed = true;
+    }
+    
+    // Knob 5: Treble
+    float knob5 = hw.knobs[5].Value();
+    if (std::abs(knob5 - currentSettings.treble) > 0.01f) {
+        currentSettings.treble = knob5;
+        eq.SetTreble((knob5 - 0.5f) * 2.0f);
+        changed = true;
+    }
+    
+    if (changed) {
+        SaveSettingsDebounced();
+    }
+}
+
+void CheckSettingsSave() {
+    if (settingsDirty) {
+        uint32_t now = daisy::System::GetNow();
+        if (now - lastSettingsChange > SAVE_DELAY_MS) {
+            settings.Save();
+            settingsDirty = false;
         }
     }
 }
@@ -98,90 +290,59 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 int main(void) {
     hw.Init(48, true);
     
-    hw.StartAdc();
-    hw.StartAudio(AudioCallback);
+    // Initialize settings
+    settings.Init(hw.seed.qspi);
+    currentSettings = settings.GetSettings();
     
+    // Initialize DSP
     hw.display.Fill(false);
-    hw.display.Update();
-    hw.DelayMs(500);
-    
-    // Initialize reverb processor
     hw.display.SetCursor(0, 0);
     hw.display.WriteString("Initializing...", Font_7x10, true);
     hw.display.Update();
     
+    inputGain.Init();
+    outputVolume.Init();
+    eq.Init(hw.AudioSampleRate());
     reverbProcessor.init(hw.AudioSampleRate());
-    reverbProcessor.setMix(reverbMix);
-    reverbProcessor.setDecay(reverbDecay);
     
-    // Load first NAM model
+    // Apply saved settings
+    inputGain.SetGain(currentSettings.inputGain - 0.5f);
+    outputVolume.SetGain(currentSettings.outputVolume - 0.5f);
+    reverbProcessor.setMix(currentSettings.reverbMix);
+    eq.SetBass((currentSettings.bass - 0.5f) * 2.0f);
+    eq.SetMid((currentSettings.mid - 0.5f) * 2.0f);
+    eq.SetTreble((currentSettings.treble - 0.5f) * 2.0f);
+    
+    // Load last used model
+    previewModelIndex = currentSettings.modelIndex;
     if (NAM_MODEL_COUNT > 0) {
-        hw.display.SetCursor(0, 0);
-        hw.display.WriteString("Loading NAM...", Font_7x10, true);
-        hw.display.Update();
-        
-        bool loaded = namProcessor.loadModel(nam_models[0].model_json);
-        
-        if (loaded) {
-            hw.SetLed(0, 1.0f);
-            hw.SetLed(1, 0.0f);
-            namEnabled = true;
-        } else {
-            hw.SetLed(0, 0.0f);
-            hw.SetLed(1, 1.0f);
-        }
-        hw.UpdateLeds();
-        hw.DelayMs(500);
+        LoadModel(currentSettings.modelIndex);
     }
+    
+    // Set initial LED states
+    hw.SetLed(0, currentSettings.reverbEnabled ? 1.0f : 0.0f);
+    hw.SetLed(1, currentSettings.namEnabled ? 1.0f : 0.0f);
+    hw.UpdateLeds();
+    
+    // Set initial bypass state
+    hw.SetAudioBypass(!currentSettings.namEnabled);
+    
+    hw.StartAdc();
+    hw.StartAudio(AudioCallback);
     
     while(1) {
         hw.ProcessAllControls();
         
-        // Footswitch 1: Toggle NAM on/off
-        if (hw.switches[0].RisingEdge()) {
-            namEnabled = !namEnabled;
-            hw.SetLed(0, namEnabled ? 1.0f : 0.0f);
-            hw.UpdateLeds();
-        }
+        HandleEncoderMovement();
+        HandleEncoderClick();
+        CheckPreviewTimeout();
         
-        // Footswitch 2: Cycle through NAM models
-        if (hw.switches[1].RisingEdge()) {
-            currentModelIndex = (currentModelIndex + 1) % NAM_MODEL_COUNT;
-            
-            hw.display.Fill(false);
-            hw.display.SetCursor(0, 0);
-            hw.display.WriteString("Loading...", Font_7x10, true);
-            hw.display.Update();
-            
-            namProcessor.loadModel(nam_models[currentModelIndex].model_json);
-            hw.DelayMs(100);
-        }
+        HandleFootswitches();
+        HandleKnobs();
         
-        // Footswitch 3: Toggle reverb on/off
-        if (hw.switches[2].RisingEdge()) {
-            reverbEnabled = !reverbEnabled;
-            hw.SetLed(1, reverbEnabled ? 1.0f : 0.0f);
-            hw.UpdateLeds();
-        }
-        
-        // Knob 1: Reverb mix
-        float knob1 = hw.knobs[0].Value();
-        reverbMix = knob1;
-        reverbProcessor.setMix(reverbMix);
-        
-        // Knob 2: Reverb decay
-        float knob2 = hw.knobs[1].Value();
-        reverbDecay = 0.5f + knob2 * 0.5f;  // Range: 0.5 to 1.0
-        reverbProcessor.setDecay(reverbDecay);
-        
-        // Knob 3: Reverb tone (high cut filter)
-        float knob3 = hw.knobs[2].Value();
-        reverbProcessor.setTone(knob3);
-        
-        // Knob 4: Output level (master volume)
-        // (This would be applied in the audio callback if needed)
-        
+        CheckSettingsSave();
         UpdateDisplay();
+        
         hw.DelayMs(10);
     }
 }

@@ -1,106 +1,94 @@
 #!/bin/bash
-# Validate NAM A2 implementation
-# This script tests that our integration works correctly
+# Desktop + build integration tests.
+#
+# Runs three desktop test suites (NAM, reverb, EQ), builds the Daisy
+# firmware, and checks binary sizes. Meant to be run before every commit.
 
 set -e
 
+REPO=$(cd "$(dirname "$0")" && pwd)
+cd "$REPO"
+
 echo "================================"
-echo "NAM A2 Integration Test Suite"
+echo "AmpSim Integration Test Suite"
 echo "================================"
 echo ""
 
-# Test 1: Build desktop test program
-echo "Test 1: Building desktop test program..."
-g++ -std=c++17 \
-    -DNAM_ENABLE_A2_FAST=1 \
-    -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 \
-    -DNAM_SAMPLE_FLOAT=1 \
-    -DNAM_USE_INLINE_GEMM=1 \
-    -O2 \
-    -o test_nam \
-    test_nam.cpp \
+DESKTOP_CXXFLAGS="-std=c++17 -O2 -Isrc"
+NAM_CXXFLAGS="$DESKTOP_CXXFLAGS \
+  -DNAM_ENABLE_A2_FAST=1 -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 \
+  -DNAM_SAMPLE_FLOAT=1 -DNAM_USE_INLINE_GEMM=1 \
+  -INeuralAmpModelerCore \
+  -INeuralAmpModelerCore/Dependencies/eigen \
+  -INeuralAmpModelerCore/Dependencies/nlohmann"
+
+# 1. NAM desktop test ---------------------------------------------------------
+echo "Test 1: NAM desktop"
+g++ $NAM_CXXFLAGS -o test_nam test_nam.cpp \
     src/nam_processor.cpp \
-    NeuralAmpModelerCore/NAM/activations.cpp \
-    NeuralAmpModelerCore/NAM/container.cpp \
-    NeuralAmpModelerCore/NAM/conv1d.cpp \
-    NeuralAmpModelerCore/NAM/convnet.cpp \
-    NeuralAmpModelerCore/NAM/dsp.cpp \
-    NeuralAmpModelerCore/NAM/get_dsp.cpp \
-    NeuralAmpModelerCore/NAM/linear.cpp \
-    NeuralAmpModelerCore/NAM/lstm.cpp \
-    NeuralAmpModelerCore/NAM/ring_buffer.cpp \
-    NeuralAmpModelerCore/NAM/util.cpp \
-    NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
-    NeuralAmpModelerCore/NAM/wavenet/model.cpp \
-    NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp \
-    -INeuralAmpModelerCore \
-    -INeuralAmpModelerCore/Dependencies/eigen \
-    -INeuralAmpModelerCore/Dependencies/nlohmann \
-    -Isrc \
-    2>&1 | grep -v "note:" | grep -v "parameter passing" || true
-
-if [ ! -f test_nam ]; then
-    echo "ERROR: Failed to build test program"
-    exit 1
-fi
-
-echo "✓ Test program built"
-echo ""
-
-# Test 2: Run desktop tests
-echo "Test 2: Running desktop validation tests..."
+    NeuralAmpModelerCore/NAM/*.cpp \
+    NeuralAmpModelerCore/NAM/wavenet/*.cpp \
+    2>&1 | grep -v 'note:' | grep -v 'parameter passing' || true
+[ -f test_nam ] || { echo "ERROR: failed to build test_nam"; exit 1; }
 ./test_nam
 echo ""
 
-# Test 3: Build for Daisy
-echo "Test 3: Building for Daisy hardware..."
+# 2. Reverb desktop test ------------------------------------------------------
+echo "Test 2: Reverb desktop"
+g++ $DESKTOP_CXXFLAGS -o test_reverb test_reverb.cpp src/dattorro/Dattorro.cpp
+./test_reverb
+echo ""
+
+# 3. EQ desktop test ----------------------------------------------------------
+echo "Test 3: EQ desktop"
+g++ $DESKTOP_CXXFLAGS -o test_eq test_eq.cpp
+./test_eq
+echo ""
+
+# 4. Daisy build --------------------------------------------------------------
+echo "Test 4: Daisy build"
 make clean > /dev/null 2>&1 || true
 make 2>&1 | tail -20
-
-if [ ! -f build/AmpSim.bin ]; then
-    echo "ERROR: Failed to build for Daisy"
-    exit 1
-fi
-
-echo "✓ Daisy build successful"
+[ -f build/AmpSim.bin ] || { echo "ERROR: Daisy build failed"; exit 1; }
+echo "OK build/AmpSim.bin exists"
 echo ""
 
-# Test 4: Check binary size
-echo "Test 4: Binary size analysis..."
-QSPI_SIZE=$(arm-none-eabi-size build/AmpSim.elf | grep -E "^\s*build" | awk '{print $4}')
-QSPI_KB=$((QSPI_SIZE / 1024))
-echo "  Code size: ${QSPI_KB}KB in QSPI flash"
+# 5. Binary size --------------------------------------------------------------
+# `size` lumps all .bss (SRAM + SDRAM arena) together, so we can't use it
+# directly. Parse the linker's own memory report from the build log we
+# already captured, or query the ELF sections directly.
+echo "Test 5: Binary size"
+QSPI_BYTES=$(arm-none-eabi-size build/AmpSim.elf | awk 'NR==2 {print $1 + $2}')
+QSPI_KB=$((QSPI_BYTES / 1024))
 
-if [ $QSPI_KB -gt 7000 ]; then
-    echo "WARNING: Binary approaching QSPI limit (8MB)"
-else
-    echo "✓ Binary size acceptable"
-fi
+# SRAM = .bss + .data (excluding .sdram_bss). Use objdump to be precise.
+SDRAM_BSS_HEX=$(arm-none-eabi-objdump -h build/AmpSim.elf | awk '/\.sdram_bss/ {print $3}')
+SDRAM_BSS_BYTES=$((16#${SDRAM_BSS_HEX:-0}))
+TOTAL_BSS=$(arm-none-eabi-size build/AmpSim.elf | awk 'NR==2 {print $3}')
+SRAM_BSS_BYTES=$((TOTAL_BSS - SDRAM_BSS_BYTES))
+SRAM_KB=$((SRAM_BSS_BYTES / 1024))
+SDRAM_KB=$((SDRAM_BSS_BYTES / 1024))
+
+echo "  QSPI (text+data):  ${QSPI_KB} KB (limit 7936)"
+echo "  SRAM (bss):         ${SRAM_KB} KB (limit ~450 free)"
+echo "  SDRAM (arena etc):  ${SDRAM_KB} KB (limit 65536)"
+[ "$QSPI_KB" -lt 7000 ] || { echo "ERROR: binary too large"; exit 1; }
+[ "$SRAM_KB" -lt 300 ]  || { echo "ERROR: SRAM too full — heap won't fit reverb+NAM"; exit 1; }
 echo ""
 
-# Test 5: Validate model conversion tool
-echo "Test 5: Testing NAM model conversion tool..."
-if [ -f "tools/nam_to_header.py" ]; then
-    python3 tools/nam_to_header.py NeuralAmpModelerCore/example_models/wavenet_a2_max.nam > /tmp/test_model.h
-    if [ -s /tmp/test_model.h ]; then
-        echo "✓ Model conversion tool works"
-        head -10 /tmp/test_model.h
-        rm /tmp/test_model.h
-    else
-        echo "ERROR: Model conversion produced empty output"
-        exit 1
-    fi
-else
-    echo "WARNING: Model conversion tool not found"
-fi
+# 6. Model conversion tool ----------------------------------------------------
+echo "Test 6: NAM model conversion tool"
+python3 tools/nam_to_header.py Captures/ > /tmp/test_model.h
+[ -s /tmp/test_model.h ] || { echo "ERROR: model conversion produced empty output"; exit 1; }
+grep -q 'NAM_MODEL_COUNT' /tmp/test_model.h || { echo "ERROR: header missing NAM_MODEL_COUNT"; exit 1; }
+rm -f /tmp/test_model.h
+echo "OK model conversion works on Captures/"
 echo ""
 
 echo "================================"
-echo "All integration tests passed! ✓"
+echo "All integration tests passed"
 echo "================================"
 echo ""
 echo "Next steps:"
-echo "1. Flash to Daisy: make program"
-echo "2. Test with guitar input"
-echo "3. Verify audio output quality"
-echo ""
+echo "  make program        # Flash via debug probe"
+echo "  make program-dfu    # Flash via USB DFU"

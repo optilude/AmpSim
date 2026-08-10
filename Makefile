@@ -10,6 +10,7 @@ CPP_STANDARD = -std=gnu++17
 # Sources
 CPP_SOURCES = src/main.cpp \
               src/nam_processor.cpp \
+              src/reverb_arena.cpp \
               hardware/guitar_pedal_125b.cpp \
               NeuralAmpModelerCore/NAM/activations.cpp \
               NeuralAmpModelerCore/NAM/container.cpp \
@@ -24,8 +25,7 @@ CPP_SOURCES = src/main.cpp \
               NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
               NeuralAmpModelerCore/NAM/wavenet/model.cpp \
               NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp \
-              src/dattorro/Dattorro.cpp \
-              src/dattorro/utilities/Utilities.cpp
+              src/dattorro/Dattorro.cpp
 
 # Include paths (compat first to shadow std::mutex)
 C_INCLUDES = -Iinclude/compat \
@@ -57,12 +57,30 @@ include $(SYSTEM_FILES_DIR)/Makefile
 # The dependency generation is already handled in the pattern rules, so remove it here
 CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 
-# Enable exceptions for NeuralAmpModelerCore (required even in bare-metal fork)
+# Enable exceptions for NeuralAmpModelerCore (required even in bare-metal fork).
+# NAM uses `throw` on the (non-audio-thread) load path; without this, get_dsp
+# and JSON parse errors would abort the process. All exception-throwing paths
+# are wrapped in try/catch in NAMProcessor::loadModel and in main.cpp.
 CPPFLAGS := $(filter-out -fno-exceptions,$(CPPFLAGS))
 CPPFLAGS += -fexceptions
 
-# Add NAM-specific defines
-CPPFLAGS += -DNAM_ENABLE_A2_FAST=1 -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 -DNAM_SAMPLE_FLOAT=1 -DNAM_USE_INLINE_GEMM=1
+# Suppress the GCC 7+ "parameter passing for argument of type X changed" notes
+# from Eigen/NAM header instantiations. These are ABI-notification warnings
+# only relevant when linking against other TUs compiled with a different
+# ARM GCC version.
+CPPFLAGS += -Wno-psabi
+
+# NAM build-time toggles:
+#   NAM_ENABLE_A2_FAST       - enable A2 fast-path SIMD/loop optimisations
+#   NAM_SHARED_PTR_ATOMIC_FREE_FUNCS - use non-atomic shared_ptr helpers
+#                                      (safe: NAM is only touched from main+ISR
+#                                      with mutual exclusion at load time)
+#   NAM_SAMPLE_FLOAT         - float samples (not double) throughout NAM
+#   NAM_USE_INLINE_GEMM      - inline the small matrix multiplies
+CPPFLAGS += -DNAM_ENABLE_A2_FAST=1 \
+            -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 \
+            -DNAM_SAMPLE_FLOAT=1 \
+            -DNAM_USE_INLINE_GEMM=1
 
 # Override libDaisy's `program` target to flash firmware directly to QSPI
 # via the STLINK debug probe.

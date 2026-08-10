@@ -40,16 +40,21 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 - ~1ms latency
 - CPU usage: ~52% @ 48kHz
 
-### Reverb Processor (`reverb_processor.h`)
+### Reverb Processor (`reverb_processor.h`, `reverb_arena.{h,cpp}`)
 - Dattorro 1997 plate reverb algorithm
-- Mono input → stereo output
-- Default parameters (MuleBox Flick settings):
+- Mono input -> stereo output; dry/wet crossfade applied at the output
+- Default parameters (MuleBox / Flick "plate" preset):
   - Time Scale: 1.007500
   - Decay: 0.8
   - Tank Diffusion: 0.85
   - Modulation: Speed 0.8, Depth 1.5
-- CPU usage: ~12-18% @ 48kHz
-- Pre-delay: 200ms (reduced from 4s for memory constraints)
+- CPU usage: ~12-18% @ 48kHz (unmeasured on hardware yet)
+- Pre-delay: 200 ms
+- Delay-line memory: **~1008 KB (measured)** — held in SDRAM via a static
+  1 MiB arena (`g_reverb_arena` in `.sdram_bss`). See `src/reverb_arena.h`.
+  The `Dattorro` object is constructed only after `InterpDelayArena::set()`
+  is called from `main()` so its delay buffers land in SDRAM instead of
+  the SRAM heap.
 
 ## Bypass System
 
@@ -71,26 +76,40 @@ NAM OFF + Rev OFF → True Bypass              → Relay ON
 
 ## Memory Architecture
 
-### Memory Regions
-- **QSPI Flash**: 731KB binary (9.21% of 8MB)
-  - Application code runs from QSPI (APP_TYPE = BOOT_QSPI)
-  - Required due to large binary size (NAM + Eigen + JSON)
-  
-- **SRAM**: 62KB (12% of 512KB)
-  - NAM model state
-  - Reverb delay lines
-  - Audio buffers
-  - Display buffer
+### Measured memory usage (2 A2-Lite models loaded, 48 kHz)
+
+| Region | Size | Contents |
+| --- | --- | --- |
+| QSPIFLASH | 736 KB | code + rodata (including model JSON as raw C strings) |
+| SRAM .bss | ~74 KB | audio buffers, HW state, display framebuffer, scratch |
+| SRAM heap (free) | ~438 KB | reserved for NAM model tensors and libc scratch |
+| SDRAM .bss | 1024 KB | reverb delay arena (`g_reverb_arena`) |
+| RAM_D2_DMA | 17 KB | libDaisy DMA buffers |
+
+NAM A2-Lite adds ~300 KB of heap allocations on the SRAM heap during
+`loadModel()` (steady state; peak during JSON parse can be ~500 KB before
+the parser's temporaries are freed).
 
 ### Why BOOT_QSPI?
-Binary too large for SRAM:
-- NAM engine: ~400KB
-- Eigen library: ~200KB
-- JSON parser: ~50KB
-- Application code: ~80KB
-- **Total**: ~731KB > 512KB SRAM
+Binary is 731 KB - larger than SRAM (512 KB) even without runtime data.
+Running from QSPI flash adds ~10-20 cycles latency per instruction fetch;
+acceptable for this application. The hot NAM inner loops still hit the
+D-cache and I-cache.
 
-Running from QSPI flash adds ~10-20 cycles latency per instruction fetch, but acceptable for this application.
+### Why SDRAM for the reverb?
+The Dattorro tank delay lines with `maxTimeScale=4.0` and 48 kHz sample
+rate total ~853 KB. Two models' NAM state + Eigen scratch use most of the
+SRAM heap already; adding the reverb tank on top would exhaust SRAM and
+throw `std::bad_alloc` at boot. The delay lines are placed in the 64 MB
+external SDRAM via a compile-time arena; on-chip SRAM stays free for
+NAM's hot data (which is far more cache-sensitive).
+
+### Model JSON storage
+NAM model JSON is emitted by `tools/nam_to_header.py` as C raw string
+literals (`R"namjson(...)namjson"`), which land in `.rodata` (QSPI). This
+means models cost zero heap until `loadModel()` runs and parses them.
+Previously the JSON was `std::string`-initialized at global init, which
+allocated on the SRAM heap before `main()` could even show a splash.
 
 ## Performance Characteristics
 
@@ -108,12 +127,10 @@ Running from QSPI flash adds ~10-20 cycles latency per instruction fetch, but ac
 - Reverb: 0-200ms pre-delay (user configurable)
 - Total throughput: ~1.1ms + pre-delay
 
-### Memory Footprint
-- Code: 731KB (QSPI)
-- Data: 62KB (SRAM)
-- NAM model state: ~40KB
-- Reverb delay lines: ~75KB (after optimization)
-- Display buffer: ~1KB
+### Memory Footprint (measured)
+- Code+rodata: 736 KB (QSPI)
+- .bss:        74 KB (SRAM) + 1024 KB (SDRAM arena)
+- Heap runtime (per NAM model loaded): ~300 KB on SRAM heap
 
 ## Threading Model
 

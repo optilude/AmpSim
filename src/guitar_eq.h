@@ -1,124 +1,151 @@
 #pragma once
 #include <cmath>
-#include "daisysp.h"
 #include "constants.h"
 
-using namespace daisysp;
+// Three-band tone stack: low shelf, mid peaking, high shelf.
+// Uses direct-form-I biquads with coefficients from the RBJ audio-EQ
+// cookbook. Coefficients are recomputed only when the gain in dB changes
+// (float equality is fine here — the change originates from the knob's
+// deadband filter so consecutive identical values are the norm).
+//
+// Frequencies and Q are fixed at compile time (see constants.h). The
+// range is +/- EQ_RANGE_DB (default 12 dB).
 
 class GuitarEQ {
 public:
     void Init(float sampleRate) {
         sampleRate_ = sampleRate;
-        
-        // Bass: Low shelf at 100Hz
-        bassFilter_.Init(sampleRate);
-        bassFilter_.SetFreq(BASS_FREQ);
-        bassFilter_.SetRes(0.707f);
-        bassFilter_.SetDrive(0.0f);
-        
-        // Mid: Peak at 1kHz
-        midFilter_.Init(sampleRate);
-        midFilter_.SetFreq(MID_FREQ);
-        midFilter_.SetRes(1.0f);  // Higher Q for peak
-        midFilter_.SetDrive(0.0f);
-        
-        // Treble: High shelf at 4kHz
-        trebleFilter_.Init(sampleRate);
-        trebleFilter_.SetFreq(TREBLE_FREQ);
-        trebleFilter_.SetRes(0.707f);
-        trebleFilter_.SetDrive(0.0f);
-        
-        bassGain_ = 0.0f;
-        midGain_ = 0.0f;
-        trebleGain_ = 0.0f;
+        bass_.init(sampleRate, BASS_FREQ, BASS_Q, BiquadKind::LowShelf, 0.0f);
+        mid_.init(sampleRate, MID_FREQ, MID_Q, BiquadKind::Peaking, 0.0f);
+        treble_.init(sampleRate, TREBLE_FREQ, TREBLE_Q, BiquadKind::HighShelf, 0.0f);
     }
-    
-    void SetBass(float gain) {
-        // Map -1 to +1 to ±12dB
-        bassGain_ = gain * EQ_RANGE_DB;
-    }
-    
-    void SetMid(float gain) {
-        midGain_ = gain * EQ_RANGE_DB;
-    }
-    
-    void SetTreble(float gain) {
-        trebleGain_ = gain * EQ_RANGE_DB;
-    }
-    
+
+    // Gain is normalized -1..+1 (matches KnobToNormalized output).
+    // -1 = -EQ_RANGE_DB, 0 = flat, +1 = +EQ_RANGE_DB.
+    void SetBass(float gainNorm) { bass_.setGainDb(gainNorm * EQ_RANGE_DB); }
+    void SetMid(float gainNorm) { mid_.setGainDb(gainNorm * EQ_RANGE_DB); }
+    void SetTreble(float gainNorm) { treble_.setGainDb(gainNorm * EQ_RANGE_DB); }
+
     float Process(float in) {
-        float out = in;
-        
-        // Bass (low shelf boost/cut)
-        // EQ boost vs cut uses different filter modes:
-        // - Boost: Use shelf filter (Low/High outputs) for smooth frequency shaping
-        // - Cut: Use opposite filter (High/Low outputs) for natural attenuation
-        if (std::abs(bassGain_) > EQ_PROCESS_THRESHOLD) {
-            bassFilter_.Process(out);
-            if (bassGain_ > 0.0f) {
-                float freq = BASS_FREQ;
-                if (freq != lastBassFreq_) {
-                    bassFilter_.SetFreq(freq);
-                    lastBassFreq_ = freq;
-                }
-                float bass = bassFilter_.Low();
-                out = out + (bass * dbToLinear(bassGain_) - in) * 0.5f;
-            } else {
-                float freq = BASS_FREQ * dbToLinear(-bassGain_);
-                if (std::abs(freq - lastBassFreq_) > 0.1f) {
-                    bassFilter_.SetFreq(freq);
-                    lastBassFreq_ = freq;
-                }
-                out = bassFilter_.High();
-            }
-        }
-        
-        // Mid (peaking)
-        if (std::abs(midGain_) > EQ_PROCESS_THRESHOLD) {
-            midFilter_.Process(out);
-            float mid = midFilter_.Peak();
-            float gain = dbToLinear(midGain_);
-            out = out + (mid * gain - out) * 0.3f;
-        }
-        
-        // Treble (high shelf boost/cut)
-        if (std::abs(trebleGain_) > EQ_PROCESS_THRESHOLD) {
-            trebleFilter_.Process(out);
-            if (trebleGain_ > 0.0f) {
-                float freq = TREBLE_FREQ;
-                if (freq != lastTrebleFreq_) {
-                    trebleFilter_.SetFreq(freq);
-                    lastTrebleFreq_ = freq;
-                }
-                float treble = trebleFilter_.High();
-                out = out + (treble * dbToLinear(trebleGain_) - in) * 0.5f;
-            } else {
-                float freq = TREBLE_FREQ / dbToLinear(-trebleGain_);
-                if (std::abs(freq - lastTrebleFreq_) > 0.1f) {
-                    trebleFilter_.SetFreq(freq);
-                    lastTrebleFreq_ = freq;
-                }
-                out = trebleFilter_.Low();
-            }
-        }
-        
-        return out;
+        float x = bass_.process(in);
+        x = mid_.process(x);
+        x = treble_.process(x);
+        return x;
     }
-    
+
+    void ProcessBlock(const float* in, float* out, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = Process(in[i]);
+        }
+    }
+
 private:
-    float sampleRate_;
-    Svf bassFilter_;
-    Svf midFilter_;
-    Svf trebleFilter_;
-    float bassGain_;
-    float midGain_;
-    float trebleGain_;
-    
-    // Cache for avoiding redundant recalculations
-    float lastBassFreq_ = 100.0f;
-    float lastTrebleFreq_ = 4000.0f;
-    
-    inline float dbToLinear(float db) {
-        return std::pow(10.0f, db / 20.0f);
-    }
+    enum class BiquadKind { LowShelf, HighShelf, Peaking };
+
+    struct Biquad {
+        // Coefficients (normalized by a0).
+        float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
+        float a1 = 0.0f, a2 = 0.0f;
+        // State (DF-I: two-sample x/y history).
+        float x1 = 0.0f, x2 = 0.0f;
+        float y1 = 0.0f, y2 = 0.0f;
+
+        float sampleRate = 48000.0f;
+        float freq = 1000.0f;
+        float q = 0.707f;
+        float gainDb = 0.0f;
+        BiquadKind kind = BiquadKind::Peaking;
+        bool bypass = true;
+
+        void init(float sr, float f, float qFactor, BiquadKind k, float gDb) {
+            sampleRate = sr;
+            freq = f;
+            q = qFactor;
+            kind = k;
+            gainDb = 0.0f;  // Force setGainDb below to run.
+            setGainDb(gDb);
+            x1 = x2 = y1 = y2 = 0.0f;
+        }
+
+        void setGainDb(float g) {
+            if (g == gainDb) return;
+            gainDb = g;
+            // Bypass path when the gain is close to zero saves cycles and
+            // guarantees perfect unity at knob-noon.
+            if (std::fabs(gainDb) < 0.05f) {
+                bypass = true;
+                b0 = 1.0f; b1 = 0.0f; b2 = 0.0f;
+                a1 = 0.0f; a2 = 0.0f;
+                return;
+            }
+            bypass = false;
+            recompute();
+        }
+
+        // RBJ cookbook coefficients.
+        //   A     = 10^(gainDb/40)
+        //   w0    = 2*pi*freq/sampleRate
+        //   alpha = sin(w0) / (2*Q)
+        // Reference: https://www.w3.org/TR/audio-eq-cookbook/
+        void recompute() {
+            const float A = std::pow(10.0f, gainDb / 40.0f);
+            const float w0 = 2.0f * float(M_PI) * freq / sampleRate;
+            const float cw = std::cos(w0);
+            const float sw = std::sin(w0);
+            const float alpha = sw / (2.0f * q);
+
+            float b0n, b1n, b2n, a0n, a1n, a2n;
+            switch (kind) {
+                case BiquadKind::LowShelf: {
+                    const float sqA2alpha = 2.0f * std::sqrt(A) * alpha;
+                    b0n =        A * ((A + 1) - (A - 1) * cw + sqA2alpha);
+                    b1n =  2.0f * A * ((A - 1) - (A + 1) * cw);
+                    b2n =        A * ((A + 1) - (A - 1) * cw - sqA2alpha);
+                    a0n =             (A + 1) + (A - 1) * cw + sqA2alpha;
+                    a1n = -2.0f *    ((A - 1) + (A + 1) * cw);
+                    a2n =             (A + 1) + (A - 1) * cw - sqA2alpha;
+                    break;
+                }
+                case BiquadKind::HighShelf: {
+                    const float sqA2alpha = 2.0f * std::sqrt(A) * alpha;
+                    b0n =        A * ((A + 1) + (A - 1) * cw + sqA2alpha);
+                    b1n = -2.0f * A * ((A - 1) + (A + 1) * cw);
+                    b2n =        A * ((A + 1) + (A - 1) * cw - sqA2alpha);
+                    a0n =             (A + 1) - (A - 1) * cw + sqA2alpha;
+                    a1n =  2.0f *    ((A - 1) - (A + 1) * cw);
+                    a2n =             (A + 1) - (A - 1) * cw - sqA2alpha;
+                    break;
+                }
+                case BiquadKind::Peaking:
+                default: {
+                    b0n =  1.0f + alpha * A;
+                    b1n = -2.0f * cw;
+                    b2n =  1.0f - alpha * A;
+                    a0n =  1.0f + alpha / A;
+                    a1n = -2.0f * cw;
+                    a2n =  1.0f - alpha / A;
+                    break;
+                }
+            }
+            const float inv = 1.0f / a0n;
+            b0 = b0n * inv;
+            b1 = b1n * inv;
+            b2 = b2n * inv;
+            a1 = a1n * inv;
+            a2 = a2n * inv;
+        }
+
+        inline float process(float x) {
+            if (bypass) return x;
+            const float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1; x1 = x;
+            y2 = y1; y1 = y;
+            return y;
+        }
+    };
+
+    float sampleRate_ = 48000.0f;
+    Biquad bass_;
+    Biquad mid_;
+    Biquad treble_;
 };

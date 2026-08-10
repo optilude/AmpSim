@@ -10,6 +10,12 @@ build/
 *.i
 *.s
 
+# Desktop test binaries
+test_nam
+test_reverb
+test_settings
+test_eq
+
 # Spurious files from Daisy Makefile bug (see Makefile line 51-54)
 -fasm
 -fexceptions

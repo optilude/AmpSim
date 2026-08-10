@@ -17,7 +17,13 @@ constexpr uint32_t ERROR_DISPLAY_TIME_MS = 5000;  // 5 seconds
 constexpr float GAIN_RANGE_DB = 20.0f;   // ±20dB for input/output
 constexpr float EQ_RANGE_DB = 12.0f;     // ±12dB for EQ bands
 
-// EQ frequencies
+// EQ frequencies (Hz)
 constexpr float BASS_FREQ = 100.0f;
 constexpr float MID_FREQ = 1000.0f;
 constexpr float TREBLE_FREQ = 4000.0f;
+
+// EQ Q factors. Shelves use 0.707 (Butterworth-like slope). The mid is
+// a peaking filter with a moderate Q for musical width.
+constexpr float BASS_Q = 0.707f;
+constexpr float MID_Q = 0.9f;
+constexpr float TREBLE_Q = 0.707f;

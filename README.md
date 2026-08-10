@@ -253,29 +253,55 @@ The conversion tool extracts the A2-Lite model (submodel 0) from the .nam file a
 
 ## Performance
 
-**Resource usage:**
-- **Binary size**: 731KB (9% of QSPI flash)
-- **SRAM usage**: 62KB (12% of 512KB)
-- **CPU usage**: ~68-74% at 48kHz
-- **Latency**: ~1ms for NAM processing
+**Resource usage (measured on desktop build, will re-measure on hardware):**
+- **QSPI code+rodata**: 736 KB (~9% of 8 MB)
+- **SRAM .bss**:         74 KB (~14% of 512 KB) — leaves ~438 KB heap free
+- **SDRAM .bss**:      1024 KB — reverb delay-line arena
+- **NAM runtime heap**: ~300 KB per model loaded
+- **CPU usage**: NOT YET MEASURED — estimates in `docs/ARCHITECTURE.md`
+  are extrapolated from bkshepherd's RP2350 numbers, not observed on this
+  hardware. Expect to re-benchmark once the board is in hand.
+- **Latency**: 1 ms audio block (48 samples @ 48 kHz), plus reverb pre-delay
 
 **Performance characteristics:**
-- Cortex-M7 @ 400MHz provides ~30% CPU headroom
+- Cortex-M7 @ 400MHz, running from QSPI (BOOT_QSPI)
 - QSPI flash execution adds ~10-20 cycles per instruction fetch
-- Reverb pre-delay optimized to 200ms (from 4s) for memory efficiency
+- NAM is processed once per audio block (not per sample) to preserve the
+  a2_fast fast-path SIMD/loop optimizations
 - Display updates throttled to 30 FPS for responsiveness
 
 ## Testing Your Build
 
-Complete this checklist after flashing:
+### Automated desktop + build tests
 
+Before flashing, run the desktop tests. These verify NAM loading, reverb
+dry/wet math, EQ response, model conversion, and the Daisy build itself:
+
+```bash
+./test_integration.sh
+```
+
+Pass criteria:
+- NAM: model loads, output is non-trivial, loudness normalization behaves
+- Reverb: SDRAM arena consumed, mix knob crossfades linearly
+- EQ: flat setting is bit-exact identity, +/- 12 dB targets are hit at
+  centre frequencies within 2 dB
+- Build: SRAM .bss under 300 KB, QSPI under 7 MB
+- Model conversion: produces valid header from `Captures/`
+
+### On-hardware checklist
+
+After `make program`:
+
+- [ ] Splash screen appears (proves reverb SDRAM init succeeded)
 - [ ] Audio passes through (connect guitar to input, amp to output)
 - [ ] FS1 toggles reverb, LED 0 indicates state
 - [ ] FS2 toggles NAM, LED 1 indicates state
 - [ ] Both OFF = true bypass (no coloration)
 - [ ] All 6 knobs respond smoothly
+- [ ] Reverb mix knob crossfades between dry and wet (not a switch)
 - [ ] Encoder browses models, click loads model
-- [ ] Settings persist after power cycle (wait 2s before power off)
+- [ ] Settings persist after power cycle (wait 2 s before power off)
 - [ ] No audio dropouts during extended play
 - [ ] EQ response is musical (bass/mid/treble)
 - [ ] Reverb adds stereo width
@@ -345,12 +371,14 @@ Complete this checklist after flashing:
 
 ## Known Limitations
 
-1. **Fixed EQ frequencies** - Bass (100Hz), Mid (1kHz), Treble (4kHz) are not adjustable
-2. **Mono input only** - Hardware limitation (stereo input not wired)
-3. **Brief mute during model changes** - Acceptable per design (model loading takes time)
-4. **Reverb is stereo output only** - When reverb is ON, output is stereo; when OFF, mono
-5. **No IR loader** - Cabinet simulation not implemented (future enhancement)
-6. **No presets** - Only one setting bank (future enhancement)
+1. **Fixed EQ frequencies** - Bass (100 Hz), Mid (1 kHz), Treble (4 kHz) with fixed Q; not adjustable at runtime.
+2. **Mono input only** - Hardware limitation (stereo input not wired).
+3. **Brief mute during model changes** - Acceptable per design (model loading takes time and involves heap allocation).
+4. **Reverb always produces stereo output** - When reverb is ON, the two output channels differ; when OFF, both channels carry the same mono signal.
+5. **No IR loader** - Cabinet simulation not implemented (future enhancement).
+6. **No presets** - Only one setting bank (future enhancement).
+7. **CPU/timing not yet measured on hardware.** All performance figures in this document should be re-verified once the board arrives.
+8. **Long-press "settings mode" not yet implemented** - see `docs/Scope.md`.
 
 ## Architecture
 

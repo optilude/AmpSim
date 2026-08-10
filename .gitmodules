@@ -6,3 +6,6 @@
 	path = DaisySP
 	url = https://github.com/electro-smith/DaisySP.git
 	branch = master
+[submodule "NeuralAmpModelerCore"]
+	path = NeuralAmpModelerCore
+	url = https://github.com/sdatkinson/NeuralAmpModelerCore.git

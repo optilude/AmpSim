@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "gain_stage.h"
 #include "guitar_eq.h"
+#include "constants.h"
 #include <string.h>
 #include <cmath>
 
@@ -31,16 +32,40 @@ PersistentSettings currentSettings;
 int previewModelIndex = 0;
 bool isPreviewingModel = false;
 uint32_t previewStartTime = 0;
-const uint32_t PREVIEW_TIMEOUT_MS = 10000;
+
+// Display update throttling
+uint32_t lastDisplayUpdate = 0;
 
 // Save debouncing
 uint32_t lastSettingsChange = 0;
 bool settingsDirty = false;
-const uint32_t SAVE_DELAY_MS = 2000;
+
+// Bypass relay state tracking
+bool currentBypassState = false;
 
 void SaveSettingsDebounced() {
     settingsDirty = true;
     lastSettingsChange = daisy::System::GetNow();
+}
+
+void UpdateBypassRelay() {
+    // Only use true bypass when BOTH effects are off
+    bool shouldBypass = !currentSettings.namEnabled && !currentSettings.reverbEnabled;
+    
+    if (shouldBypass != currentBypassState) {
+        // Mute before switching relay
+        hw.SetAudioMute(true);
+        hw.DelayMs(MUTE_DELAY_MS);
+        
+        // Switch relay
+        hw.SetAudioBypass(shouldBypass);
+        
+        // Unmute
+        hw.DelayMs(MUTE_DELAY_MS);
+        hw.SetAudioMute(false);
+        
+        currentBypassState = shouldBypass;
+    }
 }
 
 void UpdateDisplay() {
@@ -100,13 +125,37 @@ void UpdateDisplay() {
     hw.display.Update();
 }
 
+bool IsValidModelIndex(int index) {
+    return index >= 0 && index < NAM_MODEL_COUNT;
+}
+
 void LoadModel(int index) {
+    if (!IsValidModelIndex(index)) {
+        hw.display.Fill(false);
+        hw.display.SetCursor(0, 0);
+        hw.display.WriteString("Invalid Model!", Font_7x10, true);
+        hw.display.Update();
+        hw.DelayMs(ERROR_DISPLAY_TIME_MS);
+        return;
+    }
+    
     hw.display.Fill(false);
     hw.display.SetCursor(0, 0);
     hw.display.WriteString("Loading...", Font_7x10, true);
     hw.display.Update();
     
-    namProcessor.loadModel(nam_models[index].model_json);
+    if (!namProcessor.loadModel(nam_models[index].model_json)) {
+        // Show error if model load failed
+        hw.display.Fill(false);
+        hw.display.SetCursor(0, 0);
+        hw.display.WriteString("Model Load", Font_7x10, true);
+        hw.display.SetCursor(0, 12);
+        hw.display.WriteString("Failed!", Font_7x10, true);
+        hw.display.Update();
+        hw.DelayMs(ERROR_DISPLAY_TIME_MS);
+        return;
+    }
+    
     currentSettings.modelIndex = index;
     SaveSettingsDebounced();
 }
@@ -114,42 +163,41 @@ void LoadModel(int index) {
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
                    size_t size) {
-    hw.ProcessAnalogControls();
-    
     for (size_t i = 0; i < size; i++) {
         float input = in[0][i];
-        float output = input;
         
-        if (currentSettings.namEnabled && namProcessor.isModelLoaded()) {
-            // Input gain
-            output = inputGain.Process(input);
-            
-            // NAM processing
-            namProcessor.process(&output, &output, 1);
-            
-            // EQ
-            output = eq.Process(output);
-            
-            // Reverb
-            if (currentSettings.reverbEnabled) {
-                float reverbL, reverbR;
-                reverbProcessor.process(output, &reverbL, &reverbR);
-                
-                float dryMix = reverbProcessor.getDryMix();
-                float wetMix = reverbProcessor.getWetMix();
-                
-                output = output * dryMix + reverbL * wetMix;
-                out[0][i] = outputVolume.Process(output);
-                out[1][i] = outputVolume.Process(output * dryMix + reverbR * wetMix);
-            } else {
-                // No reverb
-                out[0][i] = outputVolume.Process(output);
-                out[1][i] = out[0][i];
-            }
-        } else {
-            // NAM bypassed - should be handled by true bypass relay
+        // Check if both effects are off (relay handles bypass)
+        if (!currentSettings.namEnabled && !currentSettings.reverbEnabled) {
+            // True bypass relay is engaged, pass audio through
+            // (relay routes analog signal around DSP, but we still output here for safety)
             out[0][i] = input;
             out[1][i] = input;
+            continue;
+        }
+        
+        // At least one effect is ON
+        float output = input;
+        
+        // Input gain (always active when effects are on)
+        output = inputGain.Process(input);
+        
+        // NAM (if enabled)
+        if (currentSettings.namEnabled && namProcessor.isModelLoaded()) {
+            namProcessor.process(&output, &output, 1);
+            output = eq.Process(output);
+        }
+        
+        // Reverb (if enabled)
+        if (currentSettings.reverbEnabled) {
+            float reverbL, reverbR;
+            reverbProcessor.process(output, &reverbL, &reverbR);
+            // Reverb processor already applied dry/wet mixing
+            out[0][i] = outputVolume.Process(reverbL);
+            out[1][i] = outputVolume.Process(reverbR);
+        } else {
+            output = outputVolume.Process(output);
+            out[0][i] = output;
+            out[1][i] = output;
         }
     }
 }
@@ -184,8 +232,12 @@ void CheckPreviewTimeout() {
     if (isPreviewingModel) {
         uint32_t now = daisy::System::GetNow();
         if (now - previewStartTime > PREVIEW_TIMEOUT_MS) {
-            // Revert to current model
-            previewModelIndex = currentSettings.modelIndex;
+            // Revert to current model (validated)
+            if (IsValidModelIndex(currentSettings.modelIndex)) {
+                previewModelIndex = currentSettings.modelIndex;
+            } else {
+                previewModelIndex = 0;
+            }
             isPreviewingModel = false;
         }
     }
@@ -197,26 +249,16 @@ void HandleFootswitches() {
         currentSettings.reverbEnabled = !currentSettings.reverbEnabled;
         hw.SetLed(0, currentSettings.reverbEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
+        UpdateBypassRelay();  // Check if bypass state should change
         SaveSettingsDebounced();
     }
     
-    // FS2 (Right): NAM on/off (controls true bypass)
+    // FS2 (Right): NAM on/off
     if (hw.switches[1].RisingEdge()) {
         currentSettings.namEnabled = !currentSettings.namEnabled;
         hw.SetLed(1, currentSettings.namEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
-        
-        // Mute before switching relay
-        hw.SetAudioMute(true);
-        hw.DelayMs(10);
-        
-        // Switch relay
-        hw.SetAudioBypass(!currentSettings.namEnabled);
-        
-        // Unmute
-        hw.DelayMs(10);
-        hw.SetAudioMute(false);
-        
+        UpdateBypassRelay();  // Check if bypass state should change
         SaveSettingsDebounced();
     }
 }
@@ -292,6 +334,7 @@ int main(void) {
     
     // Initialize settings
     settings.Init(hw.seed.qspi);
+    settings.ValidateSettings(NAM_MODEL_COUNT);  // Validate loaded settings
     currentSettings = settings.GetSettings();
     
     // Initialize DSP
@@ -314,9 +357,22 @@ int main(void) {
     eq.SetTreble((currentSettings.treble - 0.5f) * 2.0f);
     
     // Load last used model
-    previewModelIndex = currentSettings.modelIndex;
+    if (NAM_MODEL_COUNT == 0) {
+        hw.display.Fill(false);
+        hw.display.SetCursor(0, 0);
+        hw.display.WriteString("No Models!", Font_7x10, true);
+        hw.display.SetCursor(0, 12);
+        hw.display.WriteString("Use nam_to_header.py", Font_6x8, true);
+        hw.display.Update();
+        // Continue without model (audio will pass through)
+    }
+    
+    previewModelIndex = IsValidModelIndex(currentSettings.modelIndex) 
+        ? currentSettings.modelIndex 
+        : 0;
+    
     if (NAM_MODEL_COUNT > 0) {
-        LoadModel(currentSettings.modelIndex);
+        LoadModel(previewModelIndex);
     }
     
     // Set initial LED states
@@ -324,8 +380,9 @@ int main(void) {
     hw.SetLed(1, currentSettings.namEnabled ? 1.0f : 0.0f);
     hw.UpdateLeds();
     
-    // Set initial bypass state
-    hw.SetAudioBypass(!currentSettings.namEnabled);
+    // Set initial bypass state based on loaded settings
+    currentBypassState = !currentSettings.namEnabled && !currentSettings.reverbEnabled;
+    hw.SetAudioBypass(currentBypassState);
     
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
@@ -341,8 +398,12 @@ int main(void) {
         HandleKnobs();
         
         CheckSettingsSave();
-        UpdateDisplay();
         
-        hw.DelayMs(10);
+        // Throttle display updates
+        uint32_t now = daisy::System::GetNow();
+        if (now - lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL_MS) {
+            UpdateDisplay();
+            lastDisplayUpdate = now;
+        }
     }
 }

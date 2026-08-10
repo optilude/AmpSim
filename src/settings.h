@@ -78,6 +78,21 @@ public:
         }
     }
     
+    void ValidateSettings(int maxModelIndex) {
+        // Clamp model index to valid range
+        if (settings_.modelIndex < 0 || settings_.modelIndex >= maxModelIndex) {
+            settings_.modelIndex = 0;
+        }
+        
+        // Clamp float values to valid ranges
+        settings_.inputGain = std::max(0.0f, std::min(1.0f, settings_.inputGain));
+        settings_.outputVolume = std::max(0.0f, std::min(1.0f, settings_.outputVolume));
+        settings_.reverbMix = std::max(0.0f, std::min(1.0f, settings_.reverbMix));
+        settings_.bass = std::max(0.0f, std::min(1.0f, settings_.bass));
+        settings_.mid = std::max(0.0f, std::min(1.0f, settings_.mid));
+        settings_.treble = std::max(0.0f, std::min(1.0f, settings_.treble));
+    }
+    
 private:
     daisy::PersistentStorage<PersistentSettings>* storage_;
     PersistentSettings settings_;

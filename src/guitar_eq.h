@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include "daisysp.h"
+#include "constants.h"
 
 using namespace daisysp;
 
@@ -49,36 +50,57 @@ public:
         float out = in;
         
         // Bass (low shelf boost/cut)
-        if (bassGain_ > 0.0f) {
-            bassFilter_.SetFreq(100.0f);
-            float bass = bassFilter_.Low();
-            out = out + (bass * dbToLinear(bassGain_) - in) * 0.5f;
-        } else if (bassGain_ < 0.0f) {
-            // Cut: Use high pass
-            bassFilter_.SetFreq(100.0f * dbToLinear(-bassGain_));
-            out = bassFilter_.High();
+        // EQ boost vs cut uses different filter modes:
+        // - Boost: Use shelf filter (Low/High outputs) for smooth frequency shaping
+        // - Cut: Use opposite filter (High/Low outputs) for natural attenuation
+        if (std::abs(bassGain_) > EQ_PROCESS_THRESHOLD) {
+            bassFilter_.Process(out);
+            if (bassGain_ > 0.0f) {
+                float freq = BASS_FREQ;
+                if (freq != lastBassFreq_) {
+                    bassFilter_.SetFreq(freq);
+                    lastBassFreq_ = freq;
+                }
+                float bass = bassFilter_.Low();
+                out = out + (bass * dbToLinear(bassGain_) - in) * 0.5f;
+            } else {
+                float freq = BASS_FREQ * dbToLinear(-bassGain_);
+                if (std::abs(freq - lastBassFreq_) > 0.1f) {
+                    bassFilter_.SetFreq(freq);
+                    lastBassFreq_ = freq;
+                }
+                out = bassFilter_.High();
+            }
         }
-        bassFilter_.Process(out);
         
         // Mid (peaking)
-        if (std::abs(midGain_) > 0.1f) {
+        if (std::abs(midGain_) > EQ_PROCESS_THRESHOLD) {
+            midFilter_.Process(out);
             float mid = midFilter_.Peak();
             float gain = dbToLinear(midGain_);
             out = out + (mid * gain - out) * 0.3f;
         }
-        midFilter_.Process(out);
         
         // Treble (high shelf boost/cut)
-        if (trebleGain_ > 0.0f) {
-            trebleFilter_.SetFreq(4000.0f);
-            float treble = trebleFilter_.High();
-            out = out + (treble * dbToLinear(trebleGain_) - in) * 0.5f;
-        } else if (trebleGain_ < 0.0f) {
-            // Cut: Use low pass
-            trebleFilter_.SetFreq(4000.0f / dbToLinear(-trebleGain_));
-            out = trebleFilter_.Low();
+        if (std::abs(trebleGain_) > EQ_PROCESS_THRESHOLD) {
+            trebleFilter_.Process(out);
+            if (trebleGain_ > 0.0f) {
+                float freq = TREBLE_FREQ;
+                if (freq != lastTrebleFreq_) {
+                    trebleFilter_.SetFreq(freq);
+                    lastTrebleFreq_ = freq;
+                }
+                float treble = trebleFilter_.High();
+                out = out + (treble * dbToLinear(trebleGain_) - in) * 0.5f;
+            } else {
+                float freq = TREBLE_FREQ / dbToLinear(-trebleGain_);
+                if (std::abs(freq - lastTrebleFreq_) > 0.1f) {
+                    trebleFilter_.SetFreq(freq);
+                    lastTrebleFreq_ = freq;
+                }
+                out = trebleFilter_.Low();
+            }
         }
-        trebleFilter_.Process(out);
         
         return out;
     }
@@ -91,6 +113,10 @@ private:
     float bassGain_;
     float midGain_;
     float trebleGain_;
+    
+    // Cache for avoiding redundant recalculations
+    float lastBassFreq_ = 100.0f;
+    float lastTrebleFreq_ = 4000.0f;
     
     inline float dbToLinear(float db) {
         return std::pow(10.0f, db / 20.0f);

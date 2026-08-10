@@ -23,10 +23,13 @@ CPP_SOURCES = src/main.cpp \
               NeuralAmpModelerCore/NAM/util.cpp \
               NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
               NeuralAmpModelerCore/NAM/wavenet/model.cpp \
-              NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp
+              NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp \
+              src/dattorro/Dattorro.cpp \
+              src/dattorro/utilities/Utilities.cpp
 
 # Include paths (compat first to shadow std::mutex)
 C_INCLUDES = -Iinclude/compat \
+             -Isrc \
              -Ihardware \
              -INeuralAmpModelerCore \
              -INeuralAmpModelerCore/Dependencies/eigen \

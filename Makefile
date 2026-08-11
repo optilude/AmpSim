@@ -54,11 +54,9 @@ captures: tools/build_capture_blob.py
 
 $(OBJECTS): captures
 
-program: captures
+program: all captures
 	@echo "Creating combined firmware + capture blob..."
-	cp $(BUILD_DIR)/$(TARGET_BIN) build/combined.bin
-	python3 -c "import os; p='build/combined.bin'; size=os.path.getsize(p); limit=524288; raise SystemExit(f'app too large: {size} > {limit}') if size > limit else open(p,'ab').write(b'\0' * (limit - size))"
-	python3 -c "open('build/combined.bin','ab').write(open('build/capture_data.bin','rb').read())"
+	python3 tools/make_combined_image.py --app $(BUILD_DIR)/$(TARGET_BIN) --captures build/capture_data.bin --out build/combined.bin
 	@echo "Flashing combined firmware to QSPI..."
 	$(OCD) -s $(OCD_DIR) \
 		-f $(PGM_DEVICE) \

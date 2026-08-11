@@ -6,12 +6,12 @@ A guitar amp simulator featuring neural amp modeling (NAM A2) and plate reverb i
 
 AmpSim combines cutting-edge neural amp modeling with studio-quality reverb in a compact pedal format:
 
-- **NAM A2-Lite**: Neural network-based amp captures for authentic tube amp tones
+- **NAM A2-Lite**: Static A2 Lite runtime for authentic tube amp tones
 - **Dattorro Plate Reverb**: Stereo plate reverb with smooth decay
 - **True Bypass Relay**: Hardware bypass for pure analog signal path
 - **6 Control Knobs**: Input gain, output volume, reverb mix, 3-band EQ
 - **Rotary Encoder**: Browse and select from multiple amp models
-- **State Schema**: Firmware tracks model/effect state; persistence needs a BOOT_QSPI-safe backend
+- **State Persistence**: Selected capture and effect states are saved to QSPI
 - **Stereo Output**: Reverb produces stereo widening effect
 
 ## Hardware
@@ -46,7 +46,7 @@ Built on the bkshepherd 125B PCB with Daisy Seed:
 
 **Knobs:**
 - Rotate to adjust parameters in real-time
-- Settings auto-save 2 seconds after changes
+- Physical knob positions are the source of truth and are not persisted
 
 **Encoder:**
 - **Rotate**: Browse available NAM models
@@ -127,22 +127,23 @@ Line 5: [Instructions]
 
 ## State Persistence
 
-The firmware tracks model selection and effect on/off states in RAM. Flash
-persistence is intentionally disabled while running from QSPI because libDaisy
-does not allow QSPI erase/write when code executes from QSPI. `BOOT_SRAM` was
-tested and does not fit this firmware (about 254 KB over the SRAM app region).
-The six knobs are absolute controls: their physical positions are the source of
-truth after boot and are not persisted.
+The firmware runs with `BOOT_SRAM`, so the bootloader copies the app from QSPI
+to SRAM before execution. The remaining QSPI space holds the capture blob and a
+dedicated settings sector. This allows Daisy `PersistentStorage` to save state
+without writing to the flash that code is executing from.
 
-**What will be persisted once a safe storage backend is added:**
+**What's persisted:**
 - Current NAM model selection
 - NAM on/off state
 - Reverb on/off state
 
-**Current persistence status:**
-- Runtime state resets to defaults on power cycle
-- Persisted storage should be implemented with internal flash or a carefully audited RAM-resident QSPI write path before release
-- Settings schema validates model/effect state bounds when storage is re-enabled
+**What's not persisted:**
+- The six knob-controlled parameters. These follow the physical pot positions after boot.
+
+**Storage layout:**
+- App image: QSPI `0x90040000..0x900bffff` copied to SRAM at boot
+- Settings sector: QSPI `0x900c0000..0x900c0fff`
+- Capture blob: QSPI starting at `0x900c1000`
 
 ## Building & Flashing
 
@@ -239,34 +240,34 @@ make program
 # 1. Copy .nam file to Captures/ directory
 cp ~/Downloads/my_amp.nam Captures/
 
-# 2. Convert to C++ header
-python3 tools/nam_to_header.py Captures/ > src/model_data.h
-
-# 3. Rebuild and flash
+# 2. Rebuild and flash; the capture blob is generated automatically
 make clean && make
 make program
 ```
 
-The conversion tool extracts the A2-Lite model (submodel 0) from the .nam file and generates a C++ header with all available models.
+`tools/build_capture_blob.py` accepts only exact A2 Lite captures (WaveNet,
+3 channels, 23 layers, 1871 weights). Unsupported captures fail the build.
+Up to 128 captures are supported.
 
 ## Performance
 
-**Resource usage (measured on desktop build, will re-measure on hardware):**
-- **QSPI code+rodata**: 736 KB (~9% of 8 MB)
-- **SRAM .bss**:         74 KB (~14% of 512 KB) — leaves ~438 KB heap free
-- **SDRAM .bss**:      1024 KB — reverb delay-line arena
-- **NAM runtime heap**: ~300 KB per model loaded
+**Resource usage (current BOOT_SRAM build, will re-measure on hardware):**
+- **SRAM app image**:   ~129 KB text+data in the 480 KB SRAM app region
+- **DTCMRAM**:          ~66 KB (A2 hot state/weights and runtime data)
+- **RAM_D2**:           ~77 KB (A2 history buffer)
+- **SRAM .bss**:       ~154 KB excluding SDRAM arena
+- **SDRAM .bss**:      1024 KB reverb delay-line arena
+- **Capture blob**:     ~15 KB for the current 2 A2 Lite captures in QSPI
+- **NAM runtime heap**: none in the audio path; A2 runtime uses fixed buffers
 - **CPU usage**: NOT YET MEASURED — estimates in `docs/ARCHITECTURE.md`
   are extrapolated from bkshepherd's RP2350 numbers, not observed on this
   hardware. Expect to re-benchmark once the board is in hand.
 - **Latency**: 1 ms audio block (48 samples @ 48 kHz), plus any configured reverb pre-delay
 
 **Performance characteristics:**
-- Cortex-M7 @ 400MHz, running from QSPI (BOOT_QSPI)
-- QSPI flash execution adds ~10-20 cycles per instruction fetch
-- `BOOT_SRAM` currently does not fit; model/effect persistence therefore needs a non-QSPI storage backend or RAM-resident QSPI writer
-- NAM is processed once per audio block (not per sample) to preserve the
-  a2_fast fast-path SIMD/loop optimizations
+- Cortex-M7 @ 400MHz, running from SRAM (`BOOT_SRAM`)
+- Capture weights remain in QSPI and are copied into fixed A2 runtime buffers on model load
+- NAM is processed once per 48-sample audio block
 - Display updates throttled to 30 FPS for responsiveness
 
 ## Testing Your Build
@@ -285,8 +286,8 @@ Pass criteria:
 - Reverb: SDRAM arena consumed without fallback, mix knob crossfades linearly
 - EQ: flat setting is bit-exact identity, +/- 12 dB targets are hit at
   centre frequencies within 2 dB
-- Build: SRAM .bss under 300 KB, QSPI under 7 MB
-- Model conversion: produces valid header from `Captures/`
+- Build: `BOOT_SRAM` app fits, capture blob fits QSPI, settings/captures do not overlap
+- Model conversion: produces valid `capture_index.h` and `capture_data.bin` from `Captures/`
 
 ### On-hardware checklist
 
@@ -300,7 +301,7 @@ After `make program`:
 - [ ] All 6 knobs respond smoothly
 - [ ] Reverb mix knob crossfades between dry and wet (not a switch)
 - [ ] Encoder browses models, click loads model
-- [ ] Model/effect persistence works after a BOOT_QSPI-safe backend is added
+- [ ] Model/effect persistence works after power cycle
 - [ ] No audio dropouts during extended play
 - [ ] EQ response is musical (bass/mid/treble)
 - [ ] Reverb adds stereo width
@@ -323,9 +324,9 @@ After `make program`:
 **Symptoms**: "Model Load Failed!" error on display
 
 **Solutions:**
-1. Ensure `model_data.h` was generated:
+1. Ensure `capture_index.h` and `build/capture_data.bin` were generated:
    ```bash
-   python3 tools/nam_to_header.py Captures/ > src/model_data.h
+   python3 tools/build_capture_blob.py Captures/
    ```
 2. Verify .nam files exist in `Captures/`
 3. Rebuild firmware: `make clean && make`
@@ -336,8 +337,9 @@ After `make program`:
 **Symptoms**: Settings reset on power cycle
 
 **Solutions:**
-Persistence is currently disabled under `BOOT_QSPI`. This is expected until a
-safe storage backend is implemented.
+1. Wait 2 seconds after changing model/effect state before power off
+2. Confirm firmware was flashed as the combined image with `make program`
+3. Rebuild and reflash if the settings schema changed
 
 ### Display Issues
 
@@ -371,7 +373,7 @@ safe storage backend is implemented.
 
 1. **Fixed EQ frequencies** - Bass (100 Hz), Mid (1 kHz), Treble (4 kHz) with fixed Q; not adjustable at runtime.
 2. **Mono input only** - Hardware limitation (stereo input not wired).
-3. **Brief mute during model changes** - Acceptable per design (model loading takes time and involves heap allocation).
+3. **Brief mute during model changes** - Acceptable per design while weights are copied from QSPI and A2 state is reset.
 4. **Reverb always produces stereo output** - When reverb is ON, the two output channels differ; when OFF, both channels carry the same mono signal.
 5. **No IR loader** - Cabinet simulation not implemented (future enhancement).
 6. **No presets** - Only one setting bank (future enhancement).
@@ -384,7 +386,9 @@ safe storage backend is implemented.
 AmpSim/
 ├── src/                    # Main application source
 │   ├── main.cpp           # Main firmware entry point
-│   ├── nam_processor.*    # NAM model wrapper
+│   ├── nam_processor.*    # A2 Lite processor wrapper
+│   ├── nam_a2_runtime.h   # Static A2 Lite runtime
+│   ├── capture_index.h    # Generated QSPI capture metadata
 │   ├── reverb_processor.h # Reverb wrapper
 │   ├── settings.h         # State persistence
 │   ├── gain_stage.h       # Input/output gain
@@ -398,7 +402,8 @@ AmpSim/
 ├── include/compat/        # Bare-metal compatibility shims
 │   └── mutex              # No-op mutex for NAM library
 ├── tools/                 # Build and utility tools
-│   └── nam_to_header.py   # Model converter
+│   ├── build_capture_blob.py
+│   └── make_combined_image.py
 ├── patches/               # Submodule patches
 │   └── remove_thread_local.patch
 ├── Captures/              # NAM model files (.nam)
@@ -408,7 +413,7 @@ AmpSim/
 │   └── TESTING.md         # Validation procedures
 ├── libDaisy/              # Daisy hardware library (submodule)
 ├── DaisySP/               # Daisy DSP library (submodule)
-├── NeuralAmpModelerCore/  # NAM engine (submodule, oyama fork)
+├── NeuralAmpModelerCore/  # Desktop/reference NAM engine submodule
 ├── Makefile              # Build configuration
 └── openocd_daisy_qspi.cfg # QSPI flash programming config
 ```

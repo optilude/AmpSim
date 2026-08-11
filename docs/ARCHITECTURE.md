@@ -34,11 +34,11 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 - Coefficients are recomputed only when knob changes pass the deadband
 
 ### NAM Processor (`nam_processor.h/cpp`)
-- A2-Lite architecture (fast path enabled)
-- WaveNet-based neural network
-- Model loaded from JSON at runtime
-- ~1ms latency
-- CPU usage: ~52% @ 48kHz
+- Static A2 Lite WaveNet runtime derived from bkshepherd/nadavb work
+- Supports only exact A2 Lite captures: 3 channels, 23 layers, 1871 weights
+- Capture weights are stored in a QSPI blob and copied into fixed runtime buffers on model load
+- No JSON parsing, Eigen, exceptions, or heap allocation in firmware NAM path
+- ~1ms block latency
 
 ### Reverb Processor (`reverb_processor.h`, `reverb_arena.{h,cpp}`)
 - Dattorro 1997 plate reverb algorithm
@@ -76,30 +76,26 @@ NAM OFF + Rev OFF → True Bypass              → Relay ON
 
 ## Memory Architecture
 
-### Measured memory usage (2 A2-Lite models loaded, 48 kHz)
+### Measured memory usage (2 A2-Lite captures, 48 kHz)
 
 | Region | Size | Contents |
 | --- | --- | --- |
-| QSPIFLASH | 736 KB | code + rodata (including model JSON as raw C strings) |
-| SRAM .bss | ~74 KB | audio buffers, HW state, display framebuffer, scratch |
-| SRAM heap (free) | ~438 KB | reserved for NAM model tensors and libc scratch |
+| SRAM app | ~129 KB | BOOT_SRAM text+data copied from QSPI |
+| DTCMRAM | ~66 KB | A2 hot weights/state and runtime data |
+| RAM_D2 | ~77 KB | A2 history buffer |
+| SRAM .bss | ~154 KB | audio buffers, HW state, display framebuffer, scratch |
 | SDRAM .bss | 1024 KB | reverb delay arena (`g_reverb_arena`) |
 | RAM_D2_DMA | 17 KB | libDaisy DMA buffers |
+| QSPI capture blob | ~15 KB | current two packed A2 Lite captures |
 
-NAM A2-Lite adds ~300 KB of heap allocations on the SRAM heap during
-`loadModel()` (steady state; peak during JSON parse can be ~500 KB before
-the parser's temporaries are freed).
+NAM A2 Lite uses fixed buffers. Capture changes copy 1871 float weights from
+QSPI into the static A2 runtime and prewarm/reset state.
 
-### Why BOOT_QSPI?
-Binary is 731 KB - larger than SRAM (512 KB) even without runtime data.
-Running from QSPI flash adds ~10-20 cycles latency per instruction fetch;
-acceptable for this application. The hot NAM inner loops still hit the
-D-cache and I-cache.
-
-`BOOT_SRAM` was tested and does not fit: `.text` uses roughly 734 KB against a
-480 KB SRAM application region, before considering NAM runtime heap. This is why
-stock QSPI `PersistentStorage` cannot be used directly for settings while the
-program executes from QSPI.
+### Why BOOT_SRAM?
+The generic NeuralAmpModelerCore path was too large for `BOOT_SRAM`, but the
+static A2 Lite runtime brings the app image down to roughly 129 KB. The Daisy
+bootloader copies the app from QSPI to SRAM, leaving QSPI available for the
+capture blob and Daisy `PersistentStorage` settings writes.
 
 ### Why SDRAM for the reverb?
 The Dattorro tank delay lines with `maxTimeScale=4.0` and 48 kHz sample
@@ -109,12 +105,12 @@ throw `std::bad_alloc` at boot. The delay lines are placed in the 64 MB
 external SDRAM via a compile-time arena; on-chip SRAM stays free for
 NAM's hot data (which is far more cache-sensitive).
 
-### Model JSON storage
-NAM model JSON is emitted by `tools/nam_to_header.py` as C raw string
-literals (`R"namjson(...)namjson"`), which land in `.rodata` (QSPI). This
-means models cost zero heap until `loadModel()` runs and parses them.
-Previously the JSON was `std::string`-initialized at global init, which
-allocated on the SRAM heap before `main()` could even show a splash.
+### Capture Blob Storage
+`tools/build_capture_blob.py` converts exact A2 Lite `.nam` files into
+`build/capture_data.bin` and emits `src/capture_index.h`. The app image is
+padded to 512 KB and the capture blob is appended for flashing at
+`0x900c1000`. The script fails if more than 128 captures are present, if a NAM
+file is not exact A2 Lite, or if any QSPI region would overlap/overflow.
 
 ## Performance Characteristics
 
@@ -133,9 +129,9 @@ allocated on the SRAM heap before `main()` could even show a splash.
 - Total throughput: ~1.1ms + configured pre-delay
 
 ### Memory Footprint (measured)
-- Code+rodata: 736 KB (QSPI)
-- .bss:        74 KB (SRAM) + 1024 KB (SDRAM arena)
-- Heap runtime (per NAM model loaded): ~300 KB on SRAM heap
+- App text+data: ~129 KB in SRAM app window
+- SRAM/DTCM/RAM_D2 fixed runtime data as listed above
+- No firmware NAM heap allocation
 
 ## Threading Model
 
@@ -171,19 +167,17 @@ struct PersistentSettings {
 ```
 
 Knob positions are not persisted. The physical pots are absolute controls and
-become the source of truth after ADC warm-up at boot. Runtime persistence is
-currently disabled while the firmware executes from QSPI because libDaisy's QSPI
-driver rejects erase/write in that mode.
+become the source of truth after ADC warm-up at boot.
 
 ### Storage Details
-- **Location**: pending BOOT_QSPI-safe storage backend, preferably internal flash
-- **Size**: ~32 bytes
-- **Mechanism**: pending; do not use QSPI `PersistentStorage` directly while running from QSPI
-- **Debounce**: state changes are still dirty-tracked for a future storage hook
+- **Location**: QSPI settings sector `0x900c0000..0x900c0fff`
+- **Size**: small raw settings struct plus Daisy storage state word
+- **Mechanism**: Daisy `PersistentStorage` under `BOOT_SRAM`
+- **Debounce**: saves 2 seconds after selected capture/effect state changes
 
 ### Persistence Triggers
-- Footswitch presses (dirty-tracked)
-- Model changes (encoder click, dirty-tracked)
+- Footswitch presses
+- Model changes (encoder click)
 - Settings validated on load (bounds checking)
 
 ## Build System Quirks
@@ -191,23 +185,19 @@ driver rejects erase/write in that mode.
 ### Makefile Fixes
 - Filters Daisy's `-MMD -MP -MF` flags (prevents spurious `-fasm`/`-fexceptions` files)
 - Include path order: `include/compat` must be first (shadows `std::mutex`)
-- Enabled exceptions: `-fexceptions` (required by NAM library)
+- Firmware NAM path is exception-free; generic NeuralAmpModelerCore is not linked
 
 ### Compilation Flags
 ```makefile
 -std=gnu++17
--DNAM_ENABLE_A2_FAST=1
--DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1
--DNAM_SAMPLE_FLOAT=1
--DNAM_USE_INLINE_GEMM=1
+APP_TYPE = BOOT_SRAM
 ```
 
 ## Submodule Dependencies
 
 ### NeuralAmpModelerCore
-- **Fork**: `oyama/NeuralAmpModelerCore` (branch `add-rp2350-support`)
-- **Patch Required**: Remove `thread_local` storage (`patches/remove_thread_local.patch`)
-- **Why Fork**: Bare-metal optimizations, no OS dependencies
+- Kept as a submodule for desktop/reference validation.
+- Not linked into firmware.
 
 ### libDaisy
 - Hardware abstraction layer

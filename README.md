@@ -1,12 +1,13 @@
 # AmpSim - Guitar Amp Simulator based on Daisy Seed
 
-A guitar amp simulator featuring neural amp modeling (NAM A2) and plate reverb in a guitar pedal format.
+A guitar amp/cab simulator featuring NAM A2 Lite captures, cabinet IRs, and plate reverb in a guitar pedal format.
 
 ## Overview
 
 AmpSim combines cutting-edge neural amp modeling with studio-quality reverb in a compact pedal format:
 
 - **NAM A2-Lite**: Static A2 Lite runtime for authentic tube amp tones
+- **Cabinet IR mode**: MuleBox-style partitioned convolution for cabinet IRs
 - **Dattorro Plate Reverb**: Stereo plate reverb with smooth decay
 - **True Bypass Relay**: Hardware bypass for pure analog signal path
 - **6 Control Knobs**: Input gain, output volume, reverb mix, 3-band EQ
@@ -56,13 +57,13 @@ Built on the bkshepherd 125B PCB with Daisy Seed:
 ## Signal Chain
 
 ```
-Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Output
+Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
 ```
 
 **Processing order rationale:**
 1. **Input Gain** - Optimizes signal level for the NAM model
-2. **NAM** - Neural amp modeling (the main tone)
-3. **EQ** - Post-amp tone shaping (like an amp's tone stack)
+2. **NAM/IR engine** - Either A2 Lite amp modeling or cabinet IR, never both at once
+3. **EQ** - Post-model tone shaping
 4. **Reverb** - Adds space and depth (mono input → stereo output)
 5. **Output Volume** - Final level control
 
@@ -73,13 +74,13 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 | Switch | Function | LED | Bypass Behavior |
 |--------|----------|-----|-----------------|
 | **FS1 (Left)** | Reverb on/off | LED 0 (left) | Independent control |
-| **FS2 (Right)** | NAM on/off | LED 1 (right) | Independent control |
+| **FS2 (Right)** | Model engine on/off | LED 1 (right) | Independent control |
 
 **Bypass Logic:**
 - **Both OFF** → True bypass (analog signal path, no DSP)
-- **NAM ON, Reverb OFF** → NAM + EQ only (no reverb)
-- **NAM OFF, Reverb ON** → Reverb only (no amp modeling)
-- **Both ON** → Full chain (NAM + EQ + Reverb)
+- **Model ON, Reverb OFF** → selected NAM/IR + EQ only
+- **Model OFF, Reverb ON** → Reverb only
+- **Both ON** → selected NAM/IR + EQ + Reverb
 
 ### Knobs
 
@@ -99,7 +100,7 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 
 ### Rotary Encoder
 
-- **Rotate** (CW/CCW): Browse NAM models alphabetically
+- **Rotate** (CW/CCW): Browse NAM captures and IRs
 - **Click** (press): Load the previewed model
 - **Preview Mode**: Display shows `->` prefix before model name
 - **Auto-revert**: After 10 seconds without clicking, returns to current model
@@ -111,15 +112,15 @@ The 128x64 OLED shows real-time information:
 ```
 Line 0: [Model Name]
 Line 1: [Variant Name]
-Line 2: [NAM: ON ] [REV: ON ]
+Line 2: [MDL: ON ] [REV: ON ]
 Line 3: In:+2.5dB Out:+3.2dB
 Line 4: Rev: 30% EQ:B+2 M-1 T+4
 Line 5: [Instructions]
 ```
 
 **Display details:**
-- Model name and variant (from .nam file)
-- NAM and Reverb status (ON/OFF)
+- Capture name and variant (NAM or IR)
+- Model engine and Reverb status (ON/OFF)
 - Input and output gain in dB
 - Reverb mix as percentage
 - EQ settings as ±dB values (B=Bass, M=Mid, T=Treble)
@@ -133,8 +134,8 @@ dedicated settings sector. This allows Daisy `PersistentStorage` to save state
 without writing to the flash that code is executing from.
 
 **What's persisted:**
-- Current NAM model selection
-- NAM on/off state
+- Current capture selection
+- Model engine on/off state
 - Reverb on/off state
 
 **What's not persisted:**
@@ -245,9 +246,9 @@ make clean && make
 make program
 ```
 
-`tools/build_capture_blob.py` accepts only exact A2 Lite captures (WaveNet,
-3 channels, 23 layers, 1871 weights). Unsupported captures fail the build.
-Up to 128 captures are supported.
+`tools/build_capture_blob.py` accepts exact A2 Lite NAM captures (WaveNet,
+3 channels, 23 layers, 1871 weights) and 48 kHz mono/stereo WAV cabinet IRs.
+Unsupported files fail the build. Up to 128 total captures are supported.
 
 ## Performance
 
@@ -257,7 +258,7 @@ Up to 128 captures are supported.
 - **RAM_D2**:           ~77 KB (A2 history buffer)
 - **SRAM .bss**:       ~154 KB excluding SDRAM arena
 - **SDRAM .bss**:      1024 KB reverb delay-line arena
-- **Capture blob**:     ~15 KB for the current 2 A2 Lite captures in QSPI
+- **Capture blob**:     ~31 KB for the current 2 A2 Lite captures plus 1 IR in QSPI
 - **NAM runtime heap**: none in the audio path; A2 runtime uses fixed buffers
 - **CPU usage**: NOT YET MEASURED — estimates in `docs/ARCHITECTURE.md`
   are extrapolated from bkshepherd's RP2350 numbers, not observed on this
@@ -282,7 +283,8 @@ dry/wet math, EQ response, model conversion, and the Daisy build itself:
 ```
 
 Pass criteria:
-- NAM: generated models load, output is finite/bounded, loudness normalization behaves, failed load preserves the previous model
+- NAM: generated models load, output is finite/bounded, loudness normalization behaves
+- IR: generated IR captures load and render the DI guitar sample with finite/bounded output
 - Reverb: SDRAM arena consumed without fallback, mix knob crossfades linearly
 - EQ: flat setting is bit-exact identity, +/- 12 dB targets are hit at
   centre frequencies within 2 dB
@@ -296,11 +298,11 @@ After `make program`:
 - [ ] Splash screen appears (proves reverb SDRAM init succeeded)
 - [ ] Audio passes through (connect guitar to input, amp to output)
 - [ ] FS1 toggles reverb, LED 0 indicates state
-- [ ] FS2 toggles NAM, LED 1 indicates state
+- [ ] FS2 toggles selected NAM/IR engine, LED 1 indicates state
 - [ ] Both OFF = true bypass (no coloration)
 - [ ] All 6 knobs respond smoothly
 - [ ] Reverb mix knob crossfades between dry and wet (not a switch)
-- [ ] Encoder browses models, click loads model
+- [ ] Encoder browses NAM captures and IRs, click loads selection
 - [ ] Model/effect persistence works after power cycle
 - [ ] No audio dropouts during extended play
 - [ ] EQ response is musical (bass/mid/treble)
@@ -314,10 +316,10 @@ After `make program`:
 
 **Solutions:**
 1. Check bypass state (both effects OFF = true bypass)
-2. Press FS2 to enable NAM
+2. Press FS2 to enable the selected model engine
 3. Verify input/output cables are connected
 4. Check guitar volume knob
-5. Try different amp model (encoder rotate + click)
+5. Try different capture/IR (encoder rotate + click)
 
 ### Model Won't Load
 
@@ -375,7 +377,7 @@ After `make program`:
 2. **Mono input only** - Hardware limitation (stereo input not wired).
 3. **Brief mute during model changes** - Acceptable per design while weights are copied from QSPI and A2 state is reset.
 4. **Reverb always produces stereo output** - When reverb is ON, the two output channels differ; when OFF, both channels carry the same mono signal.
-5. **No IR loader** - Cabinet simulation not implemented (future enhancement).
+5. **NAM and IR are mutually exclusive** - no NAM-into-cab-IR chain yet.
 6. **No presets** - Only one setting bank (future enhancement).
 7. **CPU/timing not yet measured on hardware.** All performance figures in this document should be re-verified once the board arrives.
 8. **Long-press "settings mode" not yet implemented** - see `docs/Scope.md`.
@@ -388,6 +390,8 @@ AmpSim/
 │   ├── main.cpp           # Main firmware entry point
 │   ├── nam_processor.*    # A2 Lite processor wrapper
 │   ├── nam_a2_runtime.h   # Static A2 Lite runtime
+│   ├── convolution_engine.h # MuleBox-style partitioned IR convolution
+│   ├── ir_processor.h     # Cabinet IR wrapper
 │   ├── capture_index.h    # Generated QSPI capture metadata
 │   ├── reverb_processor.h # Reverb wrapper
 │   ├── settings.h         # State persistence

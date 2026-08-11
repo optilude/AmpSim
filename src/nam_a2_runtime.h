@@ -88,10 +88,10 @@ struct SharedWeights {
     NAM_A2_ALIGN32 float convW[kConvWeightCount];
     NAM_A2_ALIGN32 float l1x1W[kLayer1x1WeightCount];
     NAM_A2_ALIGN32 float headW[kHeadKernel][3];
-    float headB = 0.0f;
-    float headScale = 1.0f;
+    float headB;
+    float headScale;
     LayerRuntime layer[kNumLayers];
-    bool loaded = false;
+    bool loaded;
 };
 
 struct State {

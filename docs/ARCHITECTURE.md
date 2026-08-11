@@ -7,15 +7,15 @@ AmpSim is a guitar amp simulator running on the Electro-Smith Daisy Seed (STM32H
 ## Signal Chain
 
 ```
-Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Output
-           ↓           ↓                 ↓
-        ±20dB      A2-Lite          Mono→Stereo
+Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
+           ↓                ↓                         ↓
+        ±20dB       selected capture              Mono→Stereo
 ```
 
 **Processing Order Rationale:**
 1. **Input Gain**: Optimizes signal level for NAM model input
-2. **NAM**: Neural amp model (A2-Lite architecture)
-3. **EQ**: Post-amp tone shaping (mimics amp tone stack placement)
+2. **Model engine**: Either A2 Lite NAM or cabinet IR; the two are mutually exclusive
+3. **EQ**: Post-model tone shaping
 4. **Reverb**: Dattorro plate reverb (mono input, stereo output)
 5. **Output Volume**: Final level control before output
 
@@ -39,6 +39,13 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 - Capture weights are stored in a QSPI blob and copied into fixed runtime buffers on model load
 - No JSON parsing, Eigen, exceptions, or heap allocation in firmware NAM path
 - ~1ms block latency
+
+### Cabinet IR Processor (`ir_processor.h`, `convolution_engine.h`)
+- MuleBox-style uniform partitioned overlap-save convolution
+- 128-sample partition, 256-point CMSIS-DSP real FFT
+- IR WAVs are converted to 4096-sample normalized float captures in QSPI
+- IR FFT/FDL buffers live in SDRAM
+- NAM and IR modes are mutually exclusive in the current firmware
 
 ### Reverb Processor (`reverb_processor.h`, `reverb_arena.{h,cpp}`)
 - Dattorro 1997 plate reverb algorithm
@@ -80,13 +87,13 @@ NAM OFF + Rev OFF → True Bypass              → Relay ON
 
 | Region | Size | Contents |
 | --- | --- | --- |
-| SRAM app | ~129 KB | BOOT_SRAM text+data copied from QSPI |
-| DTCMRAM | ~66 KB | A2 hot weights/state and runtime data |
+| SRAM app | ~251 KB | BOOT_SRAM text+data copied from QSPI |
+| DTCMRAM | ~67 KB | A2 hot weights/state and runtime data |
 | RAM_D2 | ~77 KB | A2 history buffer |
 | SRAM .bss | ~154 KB | audio buffers, HW state, display framebuffer, scratch |
-| SDRAM .bss | 1024 KB | reverb delay arena (`g_reverb_arena`) |
+| SDRAM .bss | 1088 KB | reverb delay arena + IR FFT/FDL buffers |
 | RAM_D2_DMA | 17 KB | libDaisy DMA buffers |
-| QSPI capture blob | ~15 KB | current two packed A2 Lite captures |
+| QSPI capture blob | ~31 KB | current two packed A2 Lite captures plus one IR |
 
 NAM A2 Lite uses fixed buffers. Capture changes copy 1871 float weights from
 QSPI into the static A2 runtime and prewarm/reset state.
@@ -106,11 +113,12 @@ external SDRAM via a compile-time arena; on-chip SRAM stays free for
 NAM's hot data (which is far more cache-sensitive).
 
 ### Capture Blob Storage
-`tools/build_capture_blob.py` converts exact A2 Lite `.nam` files into
-`build/capture_data.bin` and emits `src/capture_index.h`. The app image is
-padded to 512 KB and the capture blob is appended for flashing at
-`0x900c1000`. The script fails if more than 128 captures are present, if a NAM
-file is not exact A2 Lite, or if any QSPI region would overlap/overflow.
+`tools/build_capture_blob.py` converts exact A2 Lite `.nam` files and 48 kHz WAV
+cabinet IRs into `build/capture_data.bin` and emits `src/capture_index.h`. The
+app image is padded to 512 KB and the capture blob is appended for flashing at
+`0x900c1000`. The script fails if more than 128 total captures are present, if a
+NAM file is not exact A2 Lite, if an IR WAV is unsupported, or if any QSPI region
+would overlap/overflow.
 
 ## Performance Characteristics
 
@@ -129,7 +137,7 @@ file is not exact A2 Lite, or if any QSPI region would overlap/overflow.
 - Total throughput: ~1.1ms + configured pre-delay
 
 ### Memory Footprint (measured)
-- App text+data: ~129 KB in SRAM app window
+- App text+data: ~251 KB in SRAM app window
 - SRAM/DTCM/RAM_D2 fixed runtime data as listed above
 - No firmware NAM heap allocation
 
@@ -138,8 +146,9 @@ file is not exact A2 Lite, or if any QSPI region would overlap/overflow.
 ### Single-Threaded Firmware
 - **Audio Callback**: Runs on interrupt (highest priority)
   - 48kHz sample rate
-  - 48 samples per block (1ms blocks)
-  - Must complete within 1ms (8,333 cycles available)
+  - 128 samples per callback (2.67 ms blocks)
+  - NAM internally processes 48-sample chunks; IR uses 128-sample partitions
+  - Must complete within 2.67 ms (~1.07M cycles at 400 MHz)
   
 - **Main Loop**: Foreground task (lower priority)
   - UI controls (knobs, switches, encoder)

@@ -1,5 +1,4 @@
 #include "nam_processor.h"
-#include "nam_a2_runtime.h"
 
 #include <cmath>
 #include <algorithm>
@@ -23,6 +22,9 @@ bool NAMProcessor::loadCapture(const CaptureEntry& capture)
     }
 
     modelLoaded = true;
+    blockIndex_ = 0;
+    std::fill(inputBlock_, inputBlock_ + nam_a2::kBlockSize, 0.0f);
+    std::fill(outputBlock_, outputBlock_ + nam_a2::kBlockSize, 0.0f);
     hasLoudness_ = capture.has_loudness != 0;
     modelLoudness_ = capture.loudness_db;
     recomputeOutputGain();
@@ -38,18 +40,13 @@ void NAMProcessor::process(float* input, float* output, size_t numSamples)
         return;
     }
 
-    // The static A2 runtime is specialized for the Daisy audio block size.
-    if (numSamples == nam_a2::kBlockSize) {
-        s_a2Player.process_block_48(input, output);
-    } else {
-        // Should not happen in firmware; keep desktop/manual callers safe.
-        for (size_t offset = 0; offset < numSamples; offset += nam_a2::kBlockSize) {
-            float blockIn[nam_a2::kBlockSize]{};
-            float blockOut[nam_a2::kBlockSize]{};
-            const size_t n = std::min<size_t>(nam_a2::kBlockSize, numSamples - offset);
-            std::copy(input + offset, input + offset + n, blockIn);
-            s_a2Player.process_block_48(blockIn, blockOut);
-            std::copy(blockOut, blockOut + n, output + offset);
+    for (size_t i = 0; i < numSamples; ++i) {
+        output[i] = outputBlock_[blockIndex_];
+        inputBlock_[blockIndex_] = input[i];
+        ++blockIndex_;
+        if (blockIndex_ >= nam_a2::kBlockSize) {
+            s_a2Player.process_block_48(inputBlock_, outputBlock_);
+            blockIndex_ = 0;
         }
     }
 

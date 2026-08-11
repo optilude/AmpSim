@@ -89,30 +89,29 @@ Before considering the firmware production-ready, verify all items on this check
 
 - [ ] **NAM OFF, Reverb ON**
   - Press FS1 (reverb on), FS2 (NAM off)
-  - Sound: Reverb only (no amp modeling)
-  - Display: "[NAM:OFF] [REV:ON]"
+  - Sound: Reverb only (no model engine)
+  - Display: "[MDL:OFF] [REV:ON]"
 
 - [ ] **Both ON**
   - Press both footswitches
-  - Sound: NAM + EQ + Reverb (full chain)
-  - Display: "[NAM:ON] [REV:ON]"
+  - Sound: selected NAM/IR + EQ + Reverb (full chain)
+  - Display: "[MDL:ON] [REV:ON]"
 
 - [ ] **Both OFF**
   - Press both footswitches to turn off
   - Sound: True bypass (analog)
   - No coloration
   - Relay clicks
-  - Display: "[NAM:OFF] [REV:OFF]"
+  - Display: "[MDL:OFF] [REV:OFF]"
 
 ### Persistence Testing
 
-Persistence is currently disabled under `BOOT_QSPI`; re-enable this checklist
-only after adding a storage backend that is safe while code executes from QSPI.
+Persistence is enabled under `BOOT_SRAM` using a dedicated QSPI settings sector.
 
 - [ ] **Settings persistence across power cycles**
   1. Change all knobs to random positions
-  2. Toggle NAM and Reverb states
-  3. Select different model
+  2. Toggle model engine and Reverb states
+  3. Select different NAM or IR capture
   4. Wait 2+ seconds (for save)
   5. Power cycle (unplug, wait 5s, plug back in)
 6. Verify model and effect on/off states restored
@@ -192,8 +191,9 @@ only after adding a storage backend that is safe while code executes from QSPI.
 ```
 
 **What it validates:**
-- ✅ Model loading from JSON
-- ✅ A2 model initialization
+- ✅ QSPI capture blob generation
+- ✅ A2 model initialization from packed weights
+- ✅ Cabinet IR render path
 - ✅ Audio processing (input → output transformation)
 - ✅ State persistence across multiple blocks
 - ✅ No crashes or assertions
@@ -217,8 +217,8 @@ make
 **Expected output:**
 ```
 Memory region         Used Size  Region Size  %age Used
-SRAM:                62KB        512KB       12%
-QSPIFLASH:           731KB       7936KB      9.21%
+SRAM app:            ~251KB      480KB       52%
+SDRAM:               ~1088KB     64MB        1.66%
 ```
 
 ### Level 3: Hardware Integration Testing (Manual)
@@ -269,7 +269,7 @@ avg_cycles = (avg_cycles * 99 + cpu_cycles) / 100;
 **Expected results:**
 - **Average**: ~5,700 cycles (68% CPU)
 - **Max**: <7,500 cycles (90% CPU)
-- **Available**: 8,333 cycles per block (48kHz @ 400MHz)
+- **Available**: ~1.07M cycles per 128-sample callback (48kHz @ 400MHz)
 
 ### Stress Test
 
@@ -304,14 +304,14 @@ git status
 
 ### Issue 2: Binary Size
 
-**Problem**: Large binary (731KB) exceeds SRAM
+**Problem**: Generic NeuralAmpModelerCore binary exceeded SRAM
 
-**Solution**: `APP_TYPE = BOOT_QSPI` runs from flash
+**Solution**: Static A2 Lite runtime plus QSPI capture blob; firmware now uses `BOOT_SRAM`
 
 **Verification:**
 ```bash
 arm-none-eabi-size build/AmpSim.elf
-# Check that binary < 8MB (QSPI size)
+# Check SRAM app and SDRAM usage
 ```
 
 ### Issue 3: Exception Handling

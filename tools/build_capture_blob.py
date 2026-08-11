@@ -7,8 +7,10 @@ WaveNet, C=3, 23 layers, 1871 weights.
 
 import argparse
 import json
+import math
 import struct
 import sys
+import wave
 import zlib
 from pathlib import Path
 
@@ -24,10 +26,19 @@ QSPI_SIZE = 0x00800000
 A2_KERNELS = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 15, 15, 6, 6, 6, 6, 6, 6, 6]
 A2_DILATIONS = [1, 3, 7, 17, 41, 101, 239, 1, 3, 7, 17, 41, 101, 239, 1, 13, 1, 3, 7, 17, 41, 101, 239]
 A2_WEIGHT_COUNT = 1871
+IR_SAMPLE_RATE = 48000
+IR_MAX_SAMPLES = 4096
 
 
 def cpp_string(s):
     return json.dumps(s)
+
+
+def cpp_float(v):
+    s = f"{float(v):.9g}"
+    if "." not in s and "e" not in s and "E" not in s:
+        s += ".0"
+    return s + "f"
 
 
 def align(data, n=4):
@@ -63,12 +74,66 @@ def find_nam_files(captures_dir):
     return sorted(Path(captures_dir).rglob("*.nam"))
 
 
+def find_ir_files(irs_dir):
+    path = Path(irs_dir)
+    if not path.exists():
+        return []
+    return sorted(path.rglob("*.wav"))
+
+
+def read_wav_mono(path):
+    with wave.open(str(path), "rb") as wav:
+        channels = wav.getnchannels()
+        width = wav.getsampwidth()
+        rate = wav.getframerate()
+        frames = wav.getnframes()
+        if rate != IR_SAMPLE_RATE:
+            raise ValueError(f"expected {IR_SAMPLE_RATE} Hz, got {rate} Hz")
+        if channels < 1 or channels > 2:
+            raise ValueError(f"expected mono/stereo WAV, got {channels} channels")
+        raw = wav.readframes(frames)
+
+    samples = []
+    if width == 2:
+        vals = struct.unpack("<" + "h" * (frames * channels), raw)
+        samples = [vals[i * channels] / 32768.0 for i in range(frames)]
+    elif width == 3:
+        for i in range(frames):
+            j = i * channels * 3
+            b0, b1, b2 = raw[j], raw[j + 1], raw[j + 2]
+            v = b0 | (b1 << 8) | (b2 << 16)
+            if v & 0x800000:
+                v |= 0xFF000000
+            v = struct.unpack("<i", struct.pack("<I", v & 0xFFFFFFFF))[0]
+            samples.append(v / 8388608.0)
+    elif width == 4:
+        vals = struct.unpack("<" + "i" * (frames * channels), raw)
+        samples = [vals[i * channels] / 2147483648.0 for i in range(frames)]
+    else:
+        raise ValueError(f"unsupported bit depth: {width * 8}")
+
+    if len(samples) > IR_MAX_SAMPLES:
+        samples = samples[:IR_MAX_SAMPLES]
+    elif len(samples) < IR_MAX_SAMPLES:
+        samples.extend([0.0] * (IR_MAX_SAMPLES - len(samples)))
+    return normalize_ir(samples)
+
+
+def normalize_ir(samples):
+    energy = sum(x * x for x in samples)
+    if energy <= 1e-12:
+        return samples
+    gain = 1.0 / math.sqrt(energy)
+    return [x * gain for x in samples]
+
+
 def build(args):
     nam_files = find_nam_files(args.captures)
-    if not nam_files:
-        raise SystemExit(f"No .nam files found in {args.captures}")
-    if len(nam_files) > MAX_CAPTURES:
-        raise SystemExit(f"Too many captures: {len(nam_files)} > {MAX_CAPTURES}")
+    ir_files = find_ir_files(args.irs)
+    if not nam_files and not ir_files:
+        raise SystemExit(f"No .nam files found in {args.captures} and no .wav IRs found in {args.irs}")
+    if len(nam_files) + len(ir_files) > MAX_CAPTURES:
+        raise SystemExit(f"Too many captures: {len(nam_files) + len(ir_files)} > {MAX_CAPTURES}")
 
     entries = []
     blob = bytearray()
@@ -105,6 +170,33 @@ def build(args):
             "crc": crc,
         })
 
+    irs_root = Path(args.irs)
+    for path in ir_files:
+        rel = path.relative_to(irs_root)
+        model_name = rel.parent.name if rel.parent.name != "." else "IR"
+        variant_name = path.stem
+        try:
+            samples = read_wav_mono(path)
+        except Exception as exc:
+            raise SystemExit(f"Unsupported IR WAV {path}: {exc}") from exc
+
+        align(blob, 4)
+        offset = len(blob)
+        raw = struct.pack("<" + "f" * len(samples), *samples)
+        blob.extend(raw)
+        crc = zlib.crc32(raw) & 0xFFFFFFFF
+        entries.append({
+            "type": "CabinetIr",
+            "model": model_name,
+            "variant": variant_name,
+            "offset": offset,
+            "bytes": len(raw),
+            "count": len(samples),
+            "loudness": 0.0,
+            "has_loudness": False,
+            "crc": crc,
+        })
+
     capture_end = CAPTURE_DATA_OFFSET + len(blob)
     if capture_end > QSPI_SIZE:
         raise SystemExit(f"Capture blob exceeds QSPI: end=0x{capture_end:x} > 0x{QSPI_SIZE:x}")
@@ -128,10 +220,10 @@ def build(args):
         h.write(f"static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x{SETTINGS_OFFSET:08x};\n\n")
         h.write("static const CaptureEntry capture_entries[CAPTURE_COUNT] = {\n")
         for e in entries:
-            h.write("    { CaptureType::NamA2Lite, ")
+            h.write(f"    {{ CaptureType::{e['type']}, ")
             h.write(f"{cpp_string(e['model'])}, {cpp_string(e['variant'])}, ")
             h.write(f"CAPTURE_DATA_QSPI_BASE + 0x{e['offset']:x}, {e['bytes']}, {e['count']}, ")
-            h.write(f"{e['loudness']:.9g}f, {1 if e['has_loudness'] else 0}, 0x{e['crc']:08x} }},\n")
+            h.write(f"{cpp_float(e['loudness'])}, {1 if e['has_loudness'] else 0}, 0x{e['crc']:08x} }},\n")
         h.write("};\n")
 
     with Path(args.out_map).open("w") as m:
@@ -150,6 +242,7 @@ def build(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("captures")
+    p.add_argument("--irs", default="IRs")
     p.add_argument("--out-bin", default="build/capture_data.bin")
     p.add_argument("--out-header", default="src/capture_index.h")
     p.add_argument("--out-map", default="build/capture_data.map")

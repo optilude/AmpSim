@@ -15,6 +15,7 @@
 #include "reverb_arena.h"
 #include "dattorro/dsp/delays/InterpDelay.hpp"
 #include "capture_index.h"
+#include "ir_processor.h"
 #include "settings.h"
 #include "gain_stage.h"
 #include "guitar_eq.h"
@@ -42,6 +43,7 @@ GuitarPedal125B hw;
 // ---------------------------------------------------------------------------
 NAMProcessor namProcessor;
 ReverbProcessor reverbProcessor;
+IRProcessor irProcessor;
 GainStage inputGain;
 GainStage outputVolume;
 GuitarEQ eq;
@@ -88,6 +90,8 @@ float currentTrebleKnob = 0.5f;
 static constexpr size_t kMaxBlock = 128;
 float scratchDry[kMaxBlock];
 float scratchWet[kMaxBlock];
+static float g_ir_freq_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
+static float g_ir_fdl_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
 
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
@@ -195,7 +199,7 @@ void UpdateDisplay() {
 
     // Line 2: effect states.
     hw.display.SetCursor(0, 22);
-    snprintf(line, sizeof line, "NAM:%s REV:%s",
+    snprintf(line, sizeof line, "MDL:%s REV:%s",
              currentSettings->namEnabled ? "ON " : "OFF",
              currentSettings->reverbEnabled ? "ON " : "OFF");
     hw.display.WriteString(line, Font_6x8, true);
@@ -262,7 +266,13 @@ void LoadModel(int index) {
     // This mirrors the intentional brief mute during model changes.
     audioSuppressed = true;
     if (audioStarted) hw.StopAudio();
-    const bool ok = namProcessor.loadCapture(capture_entries[index]);
+    const CaptureEntry& entry = capture_entries[index];
+    bool ok = false;
+    if (entry.type == CaptureType::NamA2Lite) {
+        ok = namProcessor.loadCapture(entry);
+    } else if (entry.type == CaptureType::CabinetIr) {
+        ok = irProcessor.loadCapture(entry);
+    }
     if (audioStarted) hw.StartAudio(AudioCallback);
     audioSuppressed = false;
 
@@ -312,14 +322,20 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     // 1) Input gain (per-sample tick keeps smoothing rate = sample rate).
     for (size_t i = 0; i < size; ++i) scratchDry[i] = in[0][i] * inputGain.Tick();
 
-    // 2) NAM in one shot per block (necessary for a2_fast to amortise loop
-    //    overhead; per-sample calls destroy throughput).
-    if (currentSettings->namEnabled && namProcessor.isModelLoaded()) {
-        namProcessor.process(scratchDry, scratchWet, size);
-        // 3) Tone stack (only when NAM is on — pass-through otherwise).
+    // 2) Selected model engine: NAM A2 Lite or cabinet IR.
+    if (currentSettings->namEnabled && IsValidModelIndex(currentSettings->modelIndex)) {
+        const CaptureEntry& entry = capture_entries[currentSettings->modelIndex];
+        if (entry.type == CaptureType::NamA2Lite && namProcessor.isModelLoaded()) {
+            namProcessor.process(scratchDry, scratchWet, size);
+        } else if (entry.type == CaptureType::CabinetIr && irProcessor.isLoaded()) {
+            irProcessor.processBlock(scratchDry, scratchWet, size);
+        } else {
+            for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
+        }
+        // 3) Tone stack (only when model engine is on — pass-through otherwise).
         eq.ProcessBlock(scratchWet, scratchWet, size);
     } else {
-        // Pass through the dry path (NAM off) as if it were the "wet".
+        // Pass through the dry path (model engine off) as if it were the "wet".
         for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
     }
 
@@ -470,8 +486,8 @@ static void InitReverbOrHalt() {
 // Main
 // ---------------------------------------------------------------------------
 int main(void) {
-    hw.Init(48, true);
-    hw.SetAudioBlockSize(48);
+    hw.Init(128, true);
+    hw.SetAudioBlockSize(128);
 
     // Settings — must be initialized before anything reads currentSettings.
     settings.Init(hw.seed.qspi, SETTINGS_QSPI_OFFSET);
@@ -484,6 +500,7 @@ int main(void) {
     inputGain.Init(hw.AudioSampleRate());
     outputVolume.Init(hw.AudioSampleRate());
     eq.Init(hw.AudioSampleRate());
+    irProcessor.init(g_ir_freq_buf, g_ir_fdl_buf);
 
     // Reverb (allocates from SDRAM arena).
     InitReverbOrHalt();

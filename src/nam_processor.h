@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include "capture_index.h"
+#include "nam_a2_runtime.h"
 
 // Thin wrapper around a NAM (Neural Amp Modeler) DSP model.
 //
@@ -49,4 +50,7 @@ private:
     float modelLoudness_ = 0.0f;
     float loudnessTargetDb_ = -18.0f;
     float outputGain_ = 1.0f;
+    float inputBlock_[nam_a2::kBlockSize]{};
+    float outputBlock_[nam_a2::kBlockSize]{};
+    size_t blockIndex_ = 0;
 };

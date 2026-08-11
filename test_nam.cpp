@@ -154,8 +154,9 @@ int main() {
     }
     printf("[PASS] Block processed, output range [%.3f, %.3f]\n", mn, mx);
 
-    // All generated models should load and produce finite output.
+    // All generated NAM captures should load and produce finite output.
     for (int modelIndex = 1; modelIndex < CAPTURE_COUNT; ++modelIndex) {
+        if (desktopEntries[modelIndex].type != CaptureType::NamA2Lite) continue;
         if (!proc.loadCapture(desktopEntries[modelIndex])) {
             fprintf(stderr, "[FAIL] generated model %d failed to load\n", modelIndex);
             return 1;
@@ -170,6 +171,19 @@ int main() {
         }
     }
     printf("[PASS] All generated models load and produce finite bounded output\n");
+
+    bool sawIr = false;
+    for (int i = 0; i < CAPTURE_COUNT; ++i) {
+        if (desktopEntries[i].type == CaptureType::CabinetIr) {
+            sawIr = true;
+            const uintptr_t offset = desktopEntries[i].qspi_address - reinterpret_cast<uintptr_t>(captureBlob.data());
+            if (offset + desktopEntries[i].byte_count > captureBlob.size()
+                || desktopEntries[i].item_count == 0) {
+                return fail("IR capture metadata is invalid");
+            }
+        }
+    }
+    if (sawIr) printf("[PASS] IR capture metadata points into QSPI blob\n");
 
     std::vector<float> di;
     if (loadWavMono("testing/di-stratocaster.wav", di)) {

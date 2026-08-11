@@ -14,10 +14,23 @@ CPP_SOURCES = src/main.cpp \
               Hardware/guitar_pedal_125b.cpp \
               src/dattorro/Dattorro.cpp
 
+CMSIS_DSP_DIR = $(LIBDAISY_DIR)/Drivers/CMSIS-DSP
+C_SOURCES += $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_rfft_fast_f32.c \
+             $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_rfft_fast_init_f32.c \
+             $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_cfft_f32.c \
+             $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_cfft_init_f32.c \
+             $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_cfft_radix8_f32.c \
+             $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_bitreversal2.c \
+             $(CMSIS_DSP_DIR)/Source/CommonTables/arm_common_tables.c \
+             $(CMSIS_DSP_DIR)/Source/CommonTables/arm_const_structs.c \
+             $(CMSIS_DSP_DIR)/Source/ComplexMathFunctions/arm_cmplx_mult_cmplx_f32.c \
+             $(CMSIS_DSP_DIR)/Source/BasicMathFunctions/arm_add_f32.c
+
 # Include paths (compat first to shadow std::mutex)
 C_INCLUDES = -Iinclude/compat \
              -Isrc \
-             -IHardware
+             -IHardware \
+             -I$(CMSIS_DSP_DIR)/Include
 
 # Library Locations
 LIBDAISY_DIR = libDaisy

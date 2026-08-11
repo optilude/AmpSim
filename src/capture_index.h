@@ -19,11 +19,12 @@ struct CaptureEntry {
 };
 
 static constexpr int MAX_CAPTURE_COUNT = 128;
-static constexpr int CAPTURE_COUNT = 2;
+static constexpr int CAPTURE_COUNT = 3;
 static constexpr uintptr_t CAPTURE_DATA_QSPI_BASE = 0x900c1000;
 static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x000c0000;
 
 static const CaptureEntry capture_entries[CAPTURE_COUNT] = {
     { CaptureType::NamA2Lite, "Princeton Deluxe", "Princeton Deluxe - B V7 T6 B4", CAPTURE_DATA_QSPI_BASE + 0x0, 7484, 1871, -16.3347469f, 1, 0x8cda2ef2 },
     { CaptureType::NamA2Lite, "Princeton Deluxe", "Princeton Deluxe - V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x1d3c, 7484, 1871, -16.0291502f, 1, 0xd362f12b },
+    { CaptureType::CabinetIr, "", "01_Black_1x12", CAPTURE_DATA_QSPI_BASE + 0x3a78, 16384, 4096, 0.0f, 0, 0xce85fdde },
 };

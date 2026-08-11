@@ -49,6 +49,24 @@ g++ $DESKTOP_CXXFLAGS -o test_eq test_eq.cpp
 ./test_eq
 echo ""
 
+# 3b. IR desktop test ---------------------------------------------------------
+echo "Test 3b: IR desktop"
+g++ $DESKTOP_CXXFLAGS \
+    -IlibDaisy/Drivers/CMSIS-DSP/Include \
+    -o test_ir test_ir.cpp \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_init_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_cfft_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_cfft_init_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_cfft_radix8_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/TransformFunctions/arm_bitreversal2.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/CommonTables/arm_common_tables.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/CommonTables/arm_const_structs.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/ComplexMathFunctions/arm_cmplx_mult_cmplx_f32.c \
+    libDaisy/Drivers/CMSIS-DSP/Source/BasicMathFunctions/arm_add_f32.c
+./test_ir
+echo ""
+
 # 4. Daisy build --------------------------------------------------------------
 echo "Test 4: Daisy build"
 make clean > /dev/null 2>&1 || true

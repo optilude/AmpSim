@@ -151,13 +151,13 @@ make program
 
 ## Model Conversion
 
-### NAM Captures to C++ Headers
+### Captures To QSPI Blob
 
-NAM models (`.nam` files) must be converted to C++ headers before building:
+NAM models (`.nam`) and cabinet IRs (`.wav`) are converted to a QSPI capture blob before building:
 
 ```bash
-# Convert all .nam files in Captures/ directory
-python3 tools/nam_to_header.py Captures/ > src/model_data.h
+# Convert captures and IRs
+python3 tools/build_capture_blob.py Captures/ --irs IRs
 
 # Then rebuild
 make clean
@@ -177,7 +177,7 @@ make
 
 3. **Convert and rebuild:**
    ```bash
-   python3 tools/nam_to_header.py Captures/ > src/model_data.h
+   python3 tools/build_capture_blob.py Captures/ --irs IRs
    make clean && make
    ```
 
@@ -188,25 +188,20 @@ make
 
 ### Model Format
 
-The conversion tool extracts:
-- Model name and variant
-- A2-Lite architecture (submodel 0)
-- JSON weights
-- Generates `model_data.h` with `nam_models[]` array
+The conversion tool accepts:
+- Exact NAM A2 Lite captures: WaveNet, 3 channels, 23 layers, 1871 weights
+- 48 kHz mono/stereo WAV cabinet IRs, normalized and stored as 4096-sample captures
+- Up to 128 total captures
+
+It emits `build/capture_data.bin`, `src/capture_index.h`, and `build/capture_data.map`.
 
 ## Memory Constraints
 
-### Why APP_TYPE = BOOT_QSPI?
+### Why APP_TYPE = BOOT_SRAM?
 
-The firmware binary (731KB) exceeds SRAM capacity (512KB):
-- **NAM engine**: ~400KB
-- **Eigen library**: ~200KB (matrix operations)
-- **JSON parser**: ~50KB
-- **Application**: ~80KB
-
-**Solution**: Run from QSPI flash (8MB available)
-
-**Trade-off**: Slight performance penalty (~10-20 cycles per instruction fetch)
+The firmware uses a static A2 Lite runtime instead of the generic desktop NAM
+stack, so the app fits in the BOOT_SRAM window. The bootloader copies the app
+to SRAM, leaving QSPI available for the capture blob and settings persistence.
 
 ### Memory Optimization
 
@@ -224,10 +219,9 @@ The firmware binary (731KB) exceeds SRAM capacity (512KB):
 ### Binary Size Reduction
 
 If binary grows too large:
-1. Disable reverb: `#define ENABLE_REVERB 0`
-2. Use simpler NAM models
-3. Strip debug symbols: `-s` linker flag
-4. Optimize for size: `-Os` compiler flag
+1. Disable optional IR engine / CMSIS FFT sources
+2. Disable MIDI support if unused
+3. Optimize for size: `-Os` compiler flag
 
 ## Debugging
 

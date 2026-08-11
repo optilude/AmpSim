@@ -1,17 +1,17 @@
 # Guitar effects pedal with NAM and Reverb
 
-The goal of this project is to build a guitar effects pedal that can process a mono guitar signal using a Neural Amp Modeller Architecture 2 (NAM A2) capture, optionally an Impulse Response (IR) of a cabinet (if not built into the NAM capture), and apply a plate reverb to the output, which could be line level and either mono or stereo.
+The goal of this project is to build a guitar effects pedal that can process a mono guitar signal using a Neural Amp Modeller Architecture 2 (NAM A2) capture or an Impulse Response (IR) of a cabinet (but not both at the same time), and apply a plate reverb to the output, which could be line level and either mono or stereo.
 
 The main processing will happen on an Electro Smith Daisy Seed 3 module. This will be hosted on a 125B-sized PCB created by `bkshepherd`. This has two momentary footswitches, two LEDs, an LCD screen, a rotary encoder, and six potentiometers.
 
 At a basic level, the user experience should be:
 
 - Plug a guitar into the input (mono).
-- Select an amp/cab combination using the rotary encoder, shown on the display.
+- Select an amp or cab using the rotary encoder, shown on the display.
 - Use the knobs to adjust amp input gain, output volume, reverb mix, and bass/middle/treble EQ.
 - Plug the output into a speaker or mixer.
 
-Amp and cab models (NAM captures and optionally a related cabinet IR, if using an amp-head only NAM capture) are pre-loaded onto the device at compile time. There is no user-interface to load additional items.
+Amp and cab models (NAM captures) or standalone cabinet IRs are pre-loaded onto the device at compile time. There is no user-interface to load additional items.
 
 In due course, there should be a "settings mode" (e.g. entered by long-pressing one or both foot switches), where parameters can be modified using the rotary encoder, knobs, and switches, and then persisted to the device. This might include whether to send stereo or mono output, and perhaps configure certain reverb or amp/cab parameters.
 

@@ -42,29 +42,28 @@ public:
 
     bool isReady() const { return reverb_ != nullptr; }
 
-    // Process a single sample. `input` is the dry source. `outL`/`outR`
-    // receive the dry/wet mixed output using the current mix setting.
-    // If mix=0 the output equals the dry input (both channels); if mix=1
-    // the output is pure wet reverb.
-    void process(float input, float* outL, float* outR) {
+    // Process a single sample. `reverbIn` is the signal fed into the reverb tank.
+    // `dryIn` is the dry source signal to be mixed with the wet reverb output.
+    // `outL`/`outR` receive the dry/wet mixed output.
+    void process(float reverbIn, float dryIn, float* outL, float* outR) {
         if (!reverb_) {
-            *outL = input;
-            *outR = input;
+            *outL = dryIn;
+            *outR = dryIn;
             return;
         }
-        reverb_->process(input, input);
+        reverb_->process(reverbIn, reverbIn);
         const float wetL = reverb_->getLeftOutput();
         const float wetR = reverb_->getRightOutput();
-        *outL = input * dryMix_ + wetL * wetMix_;
-        *outR = input * dryMix_ + wetR * wetMix_;
+        *outL = dryIn * dryMix_ + wetL * wetMix_;
+        *outR = dryIn * dryMix_ + wetR * wetMix_;
     }
 
-    // Mix: 0.0 = fully dry, 1.0 = fully wet. Linear crossfade.
+    // Standard Guitar Pedal Mix: Dry stays at unity (1.0), wet increases from 0 to 1.
     void setMix(float mix) {
         if (mix < 0.0f) mix = 0.0f;
         if (mix > 1.0f) mix = 1.0f;
         wetMix_ = mix;
-        dryMix_ = 1.0f - mix;
+        dryMix_ = 1.0f;
     }
 
     void setDecay(float decay) {

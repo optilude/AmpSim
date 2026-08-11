@@ -35,6 +35,9 @@ public:
     // disable normalization. Default: -18 dBFS RMS-ish (-18.0).
     void setLoudnessTarget(float targetDb);
 
+    // Reset internal state/history (useful when bypassing/unbypassing)
+    void reset();
+
     bool isModelLoaded() const { return modelLoaded; }
     bool hasLoudness() const { return hasLoudness_; }
     float getModelLoudness() const { return modelLoudness_; }

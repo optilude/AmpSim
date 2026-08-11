@@ -341,10 +341,16 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 
     // 4) Reverb + output volume + stereo. When reverb is off we still write
     //    to both output channels for consistent monitoring.
-    if (currentSettings->reverbEnabled) {
+    //    With reverb trails enabled, we always process the reverb if it was active
+    //    or if we need it to decay. Since True Bypass routes around the DSP entirely,
+    //    trails only work if the Model engine is ON (which keeps DSP active).
+    if (currentSettings->reverbEnabled || (!currentSettings->reverbEnabled && currentSettings->namEnabled)) {
         for (size_t i = 0; i < size; ++i) {
             float l, r;
-            reverbProcessor.process(scratchWet[i], &l, &r);
+            // If reverb is disabled, we feed silence (0.0f) to the reverb input to let it decay,
+            // while mixing the dry signal as normal.
+            const float reverbInput = currentSettings->reverbEnabled ? scratchWet[i] : 0.0f;
+            reverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
             const float g = outputVolume.Tick();
             out[0][i] = l * g;
             out[1][i] = r * g;
@@ -405,7 +411,7 @@ void HandleFootswitches() {
     // FS1 (Left): Reverb on/off
     if (hw.switches[0].RisingEdge()) {
         currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
-        if (!currentSettings->reverbEnabled) reverbProcessor.clear();
+        // Reverb trails: do not clear the processor here so the tail can ring out.
         hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
         UpdateBypassRelay();
@@ -415,6 +421,11 @@ void HandleFootswitches() {
     // FS2 (Right): NAM on/off
     if (hw.switches[1].RisingEdge()) {
         currentSettings->namEnabled = !currentSettings->namEnabled;
+        if (currentSettings->namEnabled) {
+            // Reset the DSP engine states when turning on to prevent a pop from old history
+            namProcessor.reset();
+            irProcessor.clear();
+        }
         hw.SetLed(1, currentSettings->namEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
         UpdateBypassRelay();
@@ -488,6 +499,7 @@ static void InitReverbOrHalt() {
 int main(void) {
     hw.Init(128, true);
     hw.SetAudioBlockSize(128);
+    static_assert(ConvolutionEngine::L == 128, "Audio block size must match CONV_PARTITION_SIZE");
 
     // Settings — must be initialized before anything reads currentSettings.
     settings.Init(hw.seed.qspi, SETTINGS_QSPI_OFFSET);

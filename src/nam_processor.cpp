@@ -69,6 +69,16 @@ void NAMProcessor::setLoudnessTarget(float targetDb)
     recomputeOutputGain();
 }
 
+void NAMProcessor::reset()
+{
+    if (modelLoaded && s_a2Player.is_loaded()) {
+        s_a2Player.reset();
+    }
+    std::fill(inputBlock_, inputBlock_ + nam_a2::kBlockSize, 0.0f);
+    std::fill(outputBlock_, outputBlock_ + nam_a2::kBlockSize, 0.0f);
+    blockIndex_ = 0;
+}
+
 void NAMProcessor::recomputeOutputGain()
 {
     if (!hasLoudness_ || std::isnan(loudnessTargetDb_)) {

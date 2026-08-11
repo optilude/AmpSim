@@ -1,72 +1,57 @@
 #include "nam_processor.h"
-#include "NAM/get_dsp.h"
-#include "NAM/dsp.h"
+#include "nam_a2_runtime.h"
 
 #include <cmath>
-#include <sstream>
+#include <algorithm>
+
+NAM_A2_STATE_DATA static nam_a2::Player s_a2Player;
 
 NAMProcessor::NAMProcessor() = default;
 NAMProcessor::~NAMProcessor() = default;
 
-bool NAMProcessor::loadModel(const char* modelJson, size_t jsonLength)
+bool NAMProcessor::loadCapture(const CaptureEntry& capture)
 {
-    try {
-        nlohmann::json config = nlohmann::json::parse(modelJson, modelJson + jsonLength);
-
-        // Free the previous model after JSON parsing so corrupt input does not
-        // kill the current sound, but before tensor allocation so model changes
-        // fit the Daisy SRAM heap.
-        model.reset();
-        modelLoaded = false;
-        hasLoudness_ = false;
-        modelLoudness_ = 0.0f;
-
-        nam::dspData returnedConfig;
-        std::unique_ptr<nam::DSP> newModel = nam::get_dsp(config, returnedConfig);
-
-        if (!newModel) {
-            recomputeOutputGain();
-            return false;
-        }
-
-        // Match the max audio block size we'll ever pass. Anything larger
-        // will force NAM to reallocate its input buffer (harmless but wastes
-        // heap on the audio thread).
-        newModel->Reset(sampleRate, 256);
-
-        bool newHasLoudness = false;
-        float newModelLoudness = 0.0f;
-
-        if (newModel->HasLoudness()) {
-            newHasLoudness = true;
-            newModelLoudness = static_cast<float>(newModel->GetLoudness());
-        }
-
-        model = std::move(newModel);
-        hasLoudness_ = newHasLoudness;
-        modelLoudness_ = newModelLoudness;
-        recomputeOutputGain();
-
-        modelLoaded = true;
-        return true;
-    } catch (const std::exception&) {
+    if (capture.type != CaptureType::NamA2Lite
+        || capture.item_count != nam_a2::kA2WeightCount
+        || capture.byte_count != nam_a2::kA2WeightCount * sizeof(float)) {
         return false;
     }
+
+    const float* weights = reinterpret_cast<const float*>(capture.qspi_address);
+    if (!s_a2Player.load_weights(weights, capture.item_count)) {
+        return false;
+    }
+
+    modelLoaded = true;
+    hasLoudness_ = capture.has_loudness != 0;
+    modelLoudness_ = capture.loudness_db;
+    recomputeOutputGain();
+    return true;
 }
 
 void NAMProcessor::process(float* input, float* output, size_t numSamples)
 {
-    if (!modelLoaded || !model) {
+    if (!modelLoaded || !s_a2Player.is_loaded()) {
         if (input != output) {
             for (size_t i = 0; i < numSamples; ++i) output[i] = input[i];
         }
         return;
     }
 
-    NAM_SAMPLE* inputArrays[1]  = { reinterpret_cast<NAM_SAMPLE*>(input) };
-    NAM_SAMPLE* outputArrays[1] = { reinterpret_cast<NAM_SAMPLE*>(output) };
-
-    model->process(inputArrays, outputArrays, static_cast<int>(numSamples));
+    // The static A2 runtime is specialized for the Daisy audio block size.
+    if (numSamples == nam_a2::kBlockSize) {
+        s_a2Player.process_block_48(input, output);
+    } else {
+        // Should not happen in firmware; keep desktop/manual callers safe.
+        for (size_t offset = 0; offset < numSamples; offset += nam_a2::kBlockSize) {
+            float blockIn[nam_a2::kBlockSize]{};
+            float blockOut[nam_a2::kBlockSize]{};
+            const size_t n = std::min<size_t>(nam_a2::kBlockSize, numSamples - offset);
+            std::copy(input + offset, input + offset + n, blockIn);
+            s_a2Player.process_block_48(blockIn, blockOut);
+            std::copy(blockOut, blockOut + n, output + offset);
+        }
+    }
 
     if (outputGain_ != 1.0f) {
         for (size_t i = 0; i < numSamples; ++i) {
@@ -78,7 +63,7 @@ void NAMProcessor::process(float* input, float* output, size_t numSamples)
 void NAMProcessor::setSampleRate(double sr)
 {
     sampleRate = sr;
-    // NAM applies the sample rate on the next Reset() (called from loadModel).
+    (void)sampleRate;
 }
 
 void NAMProcessor::setLoudnessTarget(float targetDb)

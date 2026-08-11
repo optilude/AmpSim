@@ -12,44 +12,27 @@ CPP_SOURCES = src/main.cpp \
               src/nam_processor.cpp \
               src/reverb_arena.cpp \
               Hardware/guitar_pedal_125b.cpp \
-              NeuralAmpModelerCore/NAM/activations.cpp \
-              NeuralAmpModelerCore/NAM/container.cpp \
-              NeuralAmpModelerCore/NAM/conv1d.cpp \
-              NeuralAmpModelerCore/NAM/convnet.cpp \
-              NeuralAmpModelerCore/NAM/dsp.cpp \
-              NeuralAmpModelerCore/NAM/get_dsp.cpp \
-              NeuralAmpModelerCore/NAM/linear.cpp \
-              NeuralAmpModelerCore/NAM/lstm.cpp \
-              NeuralAmpModelerCore/NAM/ring_buffer.cpp \
-              NeuralAmpModelerCore/NAM/util.cpp \
-              NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp \
-              NeuralAmpModelerCore/NAM/wavenet/model.cpp \
-              NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp \
               src/dattorro/Dattorro.cpp
 
 # Include paths (compat first to shadow std::mutex)
 C_INCLUDES = -Iinclude/compat \
              -Isrc \
-             -IHardware \
-             -INeuralAmpModelerCore \
-             -INeuralAmpModelerCore/Dependencies/eigen \
-             -INeuralAmpModelerCore/Dependencies/nlohmann
+             -IHardware
 
 # Library Locations
 LIBDAISY_DIR = libDaisy
 DAISYSP_DIR = DaisySP
 
 # Use Daisy bootloader: application is written to QSPI flash via DFU, then
-# runs from QSPI flash (not copied to SRAM). Required because NAM + Eigen +
-# JSON libraries are too large for SRAM: a BOOT_SRAM test overflows SRAM by
-# ~254 KB (text alone is ~734 KB vs a 480 KB SRAM app region).
-APP_TYPE = BOOT_QSPI
+# copied to SRAM by the bootloader. The large capture blob remains in QSPI.
+APP_TYPE = BOOT_SRAM
 
 # Use the 2000ms grace period bootloader
 BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
 
 # Core location, and generic Makefile
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
+LDFLAGS += -T$(abspath src/nam_a2_sections.lds)
 include $(SYSTEM_FILES_DIR)/Makefile
 
 # Fix Daisy Makefile bug: dependency flags create spurious files
@@ -58,37 +41,25 @@ include $(SYSTEM_FILES_DIR)/Makefile
 # The dependency generation is already handled in the pattern rules, so remove it here
 CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 
-# Enable exceptions for NeuralAmpModelerCore (required even in bare-metal fork).
-# NAM uses `throw` on the (non-audio-thread) load path; without this, get_dsp
-# and JSON parse errors would abort the process. All exception-throwing paths
-# are wrapped in try/catch in NAMProcessor::loadModel and in main.cpp.
-CPPFLAGS := $(filter-out -fno-exceptions,$(CPPFLAGS))
-CPPFLAGS += -fexceptions
-
-# Suppress the GCC 7+ "parameter passing for argument of type X changed" notes
-# from Eigen/NAM header instantiations. These are ABI-notification warnings
-# only relevant when linking against other TUs compiled with a different
-# ARM GCC version.
-CPPFLAGS += -Wno-psabi
-
-# NAM build-time toggles:
-#   NAM_ENABLE_A2_FAST       - enable A2 fast-path SIMD/loop optimisations
-#   NAM_SHARED_PTR_ATOMIC_FREE_FUNCS - use non-atomic shared_ptr helpers
-#                                      (safe: NAM is only touched from main+ISR
-#                                      with mutual exclusion at load time)
-#   NAM_SAMPLE_FLOAT         - float samples (not double) throughout NAM
-#   NAM_USE_INLINE_GEMM      - inline the small matrix multiplies
-CPPFLAGS += -DNAM_ENABLE_A2_FAST=1 \
-            -DNAM_SHARED_PTR_ATOMIC_FREE_FUNCS=1 \
-            -DNAM_SAMPLE_FLOAT=1 \
-            -DNAM_USE_INLINE_GEMM=1
+# Static A2 Lite runtime is exception-free and allocation-free in audio.
 
 # Override libDaisy's `program` target to flash firmware directly to QSPI
 # via the STLINK debug probe.
-.PHONY: program program-boot-probe
+.PHONY: program program-boot-probe captures
 
-program:
-	@echo "Flashing firmware to QSPI..."
+captures: tools/build_capture_blob.py
+	@echo "Rebuilding capture blob..."
+	@mkdir -p build
+	python3 tools/build_capture_blob.py Captures/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
+
+$(OBJECTS): captures
+
+program: captures
+	@echo "Creating combined firmware + capture blob..."
+	cp $(BUILD_DIR)/$(TARGET_BIN) build/combined.bin
+	python3 -c "import os; p='build/combined.bin'; size=os.path.getsize(p); limit=524288; raise SystemExit(f'app too large: {size} > {limit}') if size > limit else open(p,'ab').write(b'\0' * (limit - size))"
+	python3 -c "open('build/combined.bin','ab').write(open('build/capture_data.bin','rb').read())"
+	@echo "Flashing combined firmware to QSPI..."
 	$(OCD) -s $(OCD_DIR) \
 		-f $(PGM_DEVICE) \
 		-c "set QUADSPI 1" \
@@ -96,7 +67,7 @@ program:
 		-f openocd_daisy_qspi.cfg \
 		-c "init" \
 		-c "reset init" \
-		-c "program $(BUILD_DIR)/$(TARGET_BIN) verify reset exit 0x90040000"
+		-c "program build/combined.bin verify reset exit 0x90040000"
 
 # Flash the Daisy bootloader to internal flash via debug probe.
 program-boot-probe:

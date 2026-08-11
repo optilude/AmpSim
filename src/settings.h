@@ -3,9 +3,8 @@
 #include "constants.h"
 #include <cstdint>
 
-// Persistent settings schema for future storage support. Runtime persistence is
-// disabled while the firmware executes from QSPI flash because libDaisy rejects
-// QSPI erase/write in that mode.
+// Persistent settings serialized to QSPI via daisy::PersistentStorage. This is
+// only safe because the firmware runs with BOOT_SRAM in this branch.
 // IMPORTANT: This struct is written raw. Do not add non-trivially-copyable
 // members. If you change layout, bump the schema below so on-disk data is
 // treated as factory defaults instead of being reinterpreted.
@@ -46,28 +45,35 @@ struct PersistentSettings {
 // underlying PersistentStorage so mutations propagate to Save().
 class SettingsManager {
 public:
-    SettingsManager() = default;
+    SettingsManager() : storage_(nullptr), initialized_(false) {}
+
+    ~SettingsManager() { delete storage_; }
 
     SettingsManager(const SettingsManager&) = delete;
     SettingsManager& operator=(const SettingsManager&) = delete;
 
-    void Init(daisy::QSPIHandle& qspi) {
-        (void)qspi;
-        settings_ = PersistentSettings();
+    void Init(daisy::QSPIHandle& qspi, uint32_t addressOffset) {
+        storage_ = new daisy::PersistentStorage<PersistentSettings>(qspi);
+        PersistentSettings defaults;
+        storage_->Init(defaults, addressOffset);
+        if (storage_->GetSettings().schemaVersion != PersistentSettings::kSchemaVersion) {
+            storage_->RestoreDefaults();
+        }
+        initialized_ = true;
     }
 
     // Returns a reference to the live settings held by PersistentStorage.
     // Mutations to the returned struct are visible to Save().
     PersistentSettings& GetSettings() {
-        return settings_;
+        return storage_->GetSettings();
     }
 
     void Save() {
-        // Disabled for BOOT_QSPI. See QSPIHandle::CheckProgramMemory().
+        if (initialized_ && storage_) storage_->Save();
     }
 
     void RestoreDefaults() {
-        settings_ = PersistentSettings();
+        if (initialized_ && storage_) storage_->RestoreDefaults();
     }
 
     // Clamp all fields into their valid ranges. Called after Init to reject
@@ -86,5 +92,6 @@ public:
     }
 
 private:
-    PersistentSettings settings_;
+    daisy::PersistentStorage<PersistentSettings>* storage_;
+    bool initialized_;
 };

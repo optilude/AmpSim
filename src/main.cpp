@@ -14,7 +14,7 @@
 #include "reverb_processor.h"
 #include "reverb_arena.h"
 #include "dattorro/dsp/delays/InterpDelay.hpp"
-#include "model_data.h"
+#include "capture_index.h"
 #include "settings.h"
 #include "gain_stage.h"
 #include "guitar_eq.h"
@@ -171,14 +171,14 @@ void UpdateDisplay() {
     char line[32];
 
     const int shownIndex = isPreviewingModel ? previewModelIndex : currentSettings->modelIndex;
-    const bool haveModels = (NAM_MODEL_COUNT > 0) && shownIndex >= 0 && shownIndex < NAM_MODEL_COUNT;
+    const bool haveModels = (CAPTURE_COUNT > 0) && shownIndex >= 0 && shownIndex < CAPTURE_COUNT;
 
     // Line 0: model name (with preview arrow if browsing).
     hw.display.SetCursor(0, 0);
     if (haveModels) {
         snprintf(line, sizeof line, "%s%s",
                  isPreviewingModel ? "> " : "",
-                 nam_models[shownIndex].model_name);
+                 capture_entries[shownIndex].model_name);
     } else {
         snprintf(line, sizeof line, "No models");
     }
@@ -187,7 +187,7 @@ void UpdateDisplay() {
     // Line 1: variant.
     hw.display.SetCursor(0, 12);
     if (haveModels) {
-        snprintf(line, sizeof line, "%s", nam_models[shownIndex].variant_name);
+        snprintf(line, sizeof line, "%s", capture_entries[shownIndex].variant_name);
     } else {
         snprintf(line, sizeof line, "(regenerate model_data.h)");
     }
@@ -243,7 +243,7 @@ static void ShowMessage(const char* line0, const char* line1 = nullptr) {
 // Model management
 // ---------------------------------------------------------------------------
 bool IsValidModelIndex(int index) {
-    return index >= 0 && index < NAM_MODEL_COUNT;
+    return index >= 0 && index < CAPTURE_COUNT;
 }
 
 // Load a model by index. Suppresses audio for the duration so we don't
@@ -256,19 +256,18 @@ void LoadModel(int index) {
         return;
     }
 
-    ShowMessage("Loading...", nam_models[index].variant_name);
+    ShowMessage("Loading...", capture_entries[index].variant_name);
 
     // Silence and stop the callback while NAM allocates and swaps model state.
     // This mirrors the intentional brief mute during model changes.
     audioSuppressed = true;
     if (audioStarted) hw.StopAudio();
-    const bool ok = namProcessor.loadModel(nam_models[index].model_json,
-                                           nam_models[index].model_json_len);
+    const bool ok = namProcessor.loadCapture(capture_entries[index]);
     if (audioStarted) hw.StartAudio(AudioCallback);
     audioSuppressed = false;
 
     if (!ok) {
-        ShowMessage("Load failed", nam_models[index].variant_name);
+        ShowMessage("Load failed", capture_entries[index].variant_name);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
         // Keep the old model index and the previous loaded model.
         return;
@@ -348,14 +347,14 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 // Controls
 // ---------------------------------------------------------------------------
 void HandleEncoderMovement() {
-    if (NAM_MODEL_COUNT == 0) return;
+    if (CAPTURE_COUNT == 0) return;
 
     const int32_t inc = hw.encoders[0].Increment();
     if (inc == 0) return;
 
     int newIndex = previewModelIndex + inc;
-    if (newIndex < 0) newIndex = NAM_MODEL_COUNT - 1;
-    if (newIndex >= NAM_MODEL_COUNT) newIndex = 0;
+    if (newIndex < 0) newIndex = CAPTURE_COUNT - 1;
+    if (newIndex >= CAPTURE_COUNT) newIndex = 0;
 
     previewModelIndex = newIndex;
     isPreviewingModel = true;
@@ -448,18 +447,7 @@ static void InitReverbOrHalt() {
     // instances land there. If this fails the pedal is unusable, so surface
     // it on the display and hang; better than a silent crash on hardware.
     InterpDelayArena::set(g_reverb_arena, kReverbArenaFloats);
-    try {
-        reverbProcessor.init(hw.AudioSampleRate());
-    } catch (...) {
-        ShowMessage("Reverb OOM", "SDRAM exhausted");
-        // Blink both LEDs alternately to indicate init failure.
-        while (true) {
-            hw.SetLed(0, 1.0f); hw.SetLed(1, 0.0f); hw.UpdateLeds();
-            hw.DelayMs(250);
-            hw.SetLed(0, 0.0f); hw.SetLed(1, 1.0f); hw.UpdateLeds();
-            hw.DelayMs(250);
-        }
-    }
+    reverbProcessor.init(hw.AudioSampleRate());
     if (InterpDelayArena::exhausted()) {
         // The arena wasn't big enough: some delay lines fell back to heap
         // (or failed). Treat this as fatal so the NAM heap is not consumed
@@ -486,8 +474,8 @@ int main(void) {
     hw.SetAudioBlockSize(48);
 
     // Settings — must be initialized before anything reads currentSettings.
-    settings.Init(hw.seed.qspi);
-    settings.ValidateSettings(NAM_MODEL_COUNT);
+    settings.Init(hw.seed.qspi, SETTINGS_QSPI_OFFSET);
+    settings.ValidateSettings(CAPTURE_COUNT);
     currentSettings = &settings.GetSettings();
 
     ShowMessage("Initializing", "AmpSim");
@@ -513,7 +501,7 @@ int main(void) {
     namProcessor.setSampleRate(hw.AudioSampleRate());
     namProcessor.setLoudnessTarget(-18.0f);
 
-    if (NAM_MODEL_COUNT == 0) {
+    if (CAPTURE_COUNT == 0) {
         ShowMessage("No models!", "Use nam_to_header.py");
     } else {
         previewModelIndex = IsValidModelIndex(currentSettings->modelIndex)

@@ -22,9 +22,13 @@ NAM_CXXFLAGS="$DESKTOP_CXXFLAGS \
   -INeuralAmpModelerCore/Dependencies/eigen \
   -INeuralAmpModelerCore/Dependencies/nlohmann"
 
+echo "Test 0: Capture conversion"
+rm -f test_nam test_reverb test_eq build/AmpSim.bin build/AmpSim.elf
+python3 tools/build_capture_blob.py Captures/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
+echo ""
+
 # 1. NAM desktop test ---------------------------------------------------------
 echo "Test 1: NAM desktop"
-rm -f test_nam test_reverb test_eq build/AmpSim.bin build/AmpSim.elf
 g++ $NAM_CXXFLAGS -o test_nam test_nam.cpp \
     src/nam_processor.cpp \
     NeuralAmpModelerCore/NAM/*.cpp \
@@ -78,10 +82,10 @@ echo ""
 
 # 6. Model conversion tool ----------------------------------------------------
 echo "Test 6: NAM model conversion tool"
-python3 tools/nam_to_header.py Captures/ > /tmp/test_model.h
-[ -s /tmp/test_model.h ] || { echo "ERROR: model conversion produced empty output"; exit 1; }
-grep -q 'NAM_MODEL_COUNT' /tmp/test_model.h || { echo "ERROR: header missing NAM_MODEL_COUNT"; exit 1; }
-rm -f /tmp/test_model.h
+python3 tools/build_capture_blob.py Captures/ --out-bin /tmp/test_capture_data.bin --out-header /tmp/test_capture_index.h --out-map /tmp/test_capture_data.map
+[ -s /tmp/test_capture_data.bin ] || { echo "ERROR: capture conversion produced empty data"; exit 1; }
+grep -q 'CAPTURE_COUNT' /tmp/test_capture_index.h || { echo "ERROR: header missing CAPTURE_COUNT"; exit 1; }
+rm -f /tmp/test_capture_data.bin /tmp/test_capture_index.h /tmp/test_capture_data.map
 echo "OK model conversion works on Captures/"
 echo ""
 

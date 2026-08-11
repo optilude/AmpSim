@@ -1,12 +1,7 @@
 #pragma once
 
-#include <memory>
 #include <cstddef>
-
-namespace nam
-{
-class DSP;
-}
+#include "capture_index.h"
 
 // Thin wrapper around a NAM (Neural Amp Modeler) DSP model.
 //
@@ -23,10 +18,8 @@ public:
     NAMProcessor();
     ~NAMProcessor();
 
-    // Load a model from a JSON string. Accepts C-string for zero-copy
-    // (the pointer is only borrowed for the duration of parsing).
-    // Returns false and leaves the previous model unloaded on failure.
-    bool loadModel(const char* modelJson, size_t jsonLength);
+    // Load an A2 Lite capture from QSPI-backed packed weights.
+    bool loadCapture(const CaptureEntry& capture);
 
     // Process a block of samples. NAM is designed for block processing;
     // callers should pass entire audio blocks (e.g. 48 samples), NOT
@@ -49,7 +42,6 @@ public:
 private:
     void recomputeOutputGain();
 
-    std::unique_ptr<nam::DSP> model;
     bool modelLoaded = false;
     double sampleRate = 48000.0;
 

@@ -16,6 +16,7 @@
 #include <sstream>
 
 #include "nam_processor.h"
+#include "model_data.h"
 
 static bool loadJson(const char* path, std::string& out) {
     std::ifstream f(path);
@@ -30,19 +31,20 @@ int main() {
     printf("NAM A2 desktop test\n");
     printf("===================\n\n");
 
-    std::string modelJson;
-    if (!loadJson("NeuralAmpModelerCore/example_models/wavenet_a2_max.nam", modelJson)) {
-        fprintf(stderr, "ERROR: couldn't open example model. Run from repo root.\n");
+    if (NAM_MODEL_COUNT <= 0) {
+        fprintf(stderr, "ERROR: model_data.h contains no NAM models.\n");
         return 1;
     }
 
     NAMProcessor proc;
     proc.setSampleRate(48000.0);
-    if (!proc.loadModel(modelJson.c_str(), modelJson.size())) {
-        fprintf(stderr, "ERROR: loadModel returned false\n");
+
+    if (!proc.loadModel(nam_models[0].model_json, nam_models[0].model_json_len)) {
+        fprintf(stderr, "ERROR: loadModel returned false for generated model 0\n");
         return 1;
     }
-    printf("[PASS] Model loaded\n");
+    printf("[PASS] Generated model loaded: %s / %s\n",
+           nam_models[0].model_name, nam_models[0].variant_name);
     printf("       Loudness available: %s (%.2f dB)\n",
            proc.hasLoudness() ? "yes" : "no",
            proc.getModelLoudness());
@@ -59,10 +61,47 @@ int main() {
     proc.process(in, out, kBlock);
     float mn = out[0], mx = out[0];
     for (int i = 0; i < kBlock; ++i) {
+        if (!std::isfinite(out[i])) {
+            fprintf(stderr, "[FAIL] model output was not finite\n");
+            return 1;
+        }
         if (out[i] < mn) mn = out[i];
         if (out[i] > mx) mx = out[i];
     }
+    if (std::max(std::fabs(mn), std::fabs(mx)) > 5.0f) {
+        fprintf(stderr, "[FAIL] generated model output is unexpectedly hot [%.3f, %.3f]\n", mn, mx);
+        return 1;
+    }
     printf("[PASS] Block processed, output range [%.3f, %.3f]\n", mn, mx);
+
+    // All generated models should load and produce finite output.
+    for (int modelIndex = 1; modelIndex < NAM_MODEL_COUNT; ++modelIndex) {
+        if (!proc.loadModel(nam_models[modelIndex].model_json,
+                            nam_models[modelIndex].model_json_len)) {
+            fprintf(stderr, "[FAIL] generated model %d failed to load\n", modelIndex);
+            return 1;
+        }
+        proc.process(in, out, kBlock);
+        for (int i = 0; i < kBlock; ++i) {
+            if (!std::isfinite(out[i]) || std::fabs(out[i]) > 5.0f) {
+                fprintf(stderr, "[FAIL] generated model %d produced bad output %.3f\n",
+                        modelIndex, out[i]);
+                return 1;
+            }
+        }
+    }
+    printf("[PASS] All generated models load and produce finite bounded output\n");
+
+    // A corrupt JSON load must fail before unloading the previous good model.
+    if (proc.loadModel("{ definitely not nam json", 25)) {
+        fprintf(stderr, "[FAIL] corrupt model unexpectedly loaded\n");
+        return 1;
+    }
+    if (!proc.isModelLoaded()) {
+        fprintf(stderr, "[FAIL] corrupt load cleared previous model\n");
+        return 1;
+    }
+    printf("[PASS] Failed load preserves previous model\n");
 
     // Test bypass when no model loaded.
     NAMProcessor unloaded;

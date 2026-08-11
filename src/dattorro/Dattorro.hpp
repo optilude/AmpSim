@@ -109,6 +109,7 @@ public:
     float maxSampleRate = 32000.0;
     float sampleRate = maxSampleRate;
     float sampleRateScale = sampleRate / dattorroSampleRate;
+    bool delaysInitialised = false;
 
     float maxTimeScale = 1.0;
     float timeScale = 1.0;

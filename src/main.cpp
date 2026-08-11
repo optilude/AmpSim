@@ -60,9 +60,11 @@ uint32_t previewStartTime = 0;
 // Display update throttling.
 uint32_t lastDisplayUpdate = 0;
 
-// Debounced settings save.
+// Debounced settings save. Save() is currently a no-op under BOOT_QSPI, but
+// keeping the dirty tracking localizes the future persistence hook.
 uint32_t lastSettingsChange = 0;
 bool settingsDirty = false;
+bool audioStarted = false;
 
 // True-bypass relay state tracking.
 bool currentBypassState = false;
@@ -72,11 +74,58 @@ bool currentBypassState = false;
 // (prevents pops on the DAC output while the relay contacts settle).
 volatile bool audioSuppressed = false;
 
+// Live physical knob state. Knobs are intentionally not persisted; after boot,
+// the physical pot position is the source of truth for these parameters.
+float currentInputGainKnob = 0.5f;
+float currentOutputVolumeKnob = 0.5f;
+float currentReverbMixKnob = 0.3f;
+float currentBassKnob = 0.5f;
+float currentMidKnob = 0.5f;
+float currentTrebleKnob = 0.5f;
+
 // Scratch buffers for block-based DSP. Sized for the maximum audio block
 // we ever configure (48 samples per SetAudioBlockSize in Init).
 static constexpr size_t kMaxBlock = 128;
 float scratchDry[kMaxBlock];
 float scratchWet[kMaxBlock];
+
+void AudioCallback(daisy::AudioHandle::InputBuffer in,
+                   daisy::AudioHandle::OutputBuffer out,
+                   size_t size);
+
+static void ApplyControlTargetsOnAudioThread() {
+    static float appliedInputGain = -1.0f;
+    static float appliedOutputVolume = -1.0f;
+    static float appliedReverbMix = -1.0f;
+    static float appliedBass = -1.0f;
+    static float appliedMid = -1.0f;
+    static float appliedTreble = -1.0f;
+
+    if (currentInputGainKnob != appliedInputGain) {
+        appliedInputGain = currentInputGainKnob;
+        inputGain.SetGain(KnobToNormalized(appliedInputGain));
+    }
+    if (currentOutputVolumeKnob != appliedOutputVolume) {
+        appliedOutputVolume = currentOutputVolumeKnob;
+        outputVolume.SetGain(KnobToNormalized(appliedOutputVolume));
+    }
+    if (currentReverbMixKnob != appliedReverbMix) {
+        appliedReverbMix = currentReverbMixKnob;
+        reverbProcessor.setMix(appliedReverbMix);
+    }
+    if (currentBassKnob != appliedBass) {
+        appliedBass = currentBassKnob;
+        eq.SetBass(KnobToNormalized(appliedBass));
+    }
+    if (currentMidKnob != appliedMid) {
+        appliedMid = currentMidKnob;
+        eq.SetMid(KnobToNormalized(appliedMid));
+    }
+    if (currentTrebleKnob != appliedTreble) {
+        appliedTreble = currentTrebleKnob;
+        eq.SetTreble(KnobToNormalized(appliedTreble));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -160,10 +209,10 @@ void UpdateDisplay() {
 
     // Line 4: reverb mix + EQ. Keep it under 21 chars for Font_6x8.
     hw.display.SetCursor(0, 42);
-    const int revPct = (int)std::lround(currentSettings->reverbMix * 100.0f);
-    const int bassDb = (int)std::lround(KnobToNormalized(currentSettings->bass) * EQ_RANGE_DB);
-    const int midDb = (int)std::lround(KnobToNormalized(currentSettings->mid) * EQ_RANGE_DB);
-    const int trebDb = (int)std::lround(KnobToNormalized(currentSettings->treble) * EQ_RANGE_DB);
+    const int revPct = (int)std::lround(currentReverbMixKnob * 100.0f);
+    const int bassDb = (int)std::lround(KnobToNormalized(currentBassKnob) * EQ_RANGE_DB);
+    const int midDb = (int)std::lround(KnobToNormalized(currentMidKnob) * EQ_RANGE_DB);
+    const int trebDb = (int)std::lround(KnobToNormalized(currentTrebleKnob) * EQ_RANGE_DB);
     snprintf(line, sizeof line, "R%3d B%+3d M%+3d T%+3d", revPct, bassDb, midDb, trebDb);
     hw.display.WriteString(line, Font_6x8, true);
 
@@ -209,23 +258,26 @@ void LoadModel(int index) {
 
     ShowMessage("Loading...", nam_models[index].variant_name);
 
-    // Silence the DSP while NAM tears down and rebuilds; the load itself
-    // is not real-time-safe (heap allocations).
+    // Silence and stop the callback while NAM allocates and swaps model state.
+    // This mirrors the intentional brief mute during model changes.
     audioSuppressed = true;
+    if (audioStarted) hw.StopAudio();
     const bool ok = namProcessor.loadModel(nam_models[index].model_json,
                                            nam_models[index].model_json_len);
+    if (audioStarted) hw.StartAudio(AudioCallback);
     audioSuppressed = false;
 
     if (!ok) {
         ShowMessage("Load failed", nam_models[index].variant_name);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
-        // Keep the old model index; the previous model is now gone (NAMProcessor
-        // clears state before parsing) but at least we don't persist a bad index.
+        // Keep the old model index and the previous loaded model.
         return;
     }
 
-    currentSettings->modelIndex = index;
-    SaveSettingsDebounced();
+    if (currentSettings->modelIndex != index) {
+        currentSettings->modelIndex = index;
+        SaveSettingsDebounced();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,8 +296,8 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     }
 
     // True-bypass path (both effects off). The relay routes the analog
-    // signal around the DSP; we still output silence in case the DAC isn't
-    // physically disconnected from the output jack.
+    // signal around the DSP; keep the codec path as dual mono until the
+    // hardware confirms whether DAC silence is preferable here.
     if (!currentSettings->namEnabled && !currentSettings->reverbEnabled) {
         for (size_t i = 0; i < size; ++i) {
             const float x = in[0][i];
@@ -254,6 +306,8 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
         }
         return;
     }
+
+    ApplyControlTargetsOnAudioThread();
 
     // -- DSP path --
     // 1) Input gain (per-sample tick keeps smoothing rate = sample rate).
@@ -336,6 +390,7 @@ void HandleFootswitches() {
     // FS1 (Left): Reverb on/off
     if (hw.switches[0].RisingEdge()) {
         currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
+        if (!currentSettings->reverbEnabled) reverbProcessor.clear();
         hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
         UpdateBypassRelay();
@@ -362,20 +417,18 @@ static bool UpdateKnob(float knobRaw, float& stored, Apply apply) {
 }
 
 void HandleKnobs() {
-    bool changed = false;
-    changed |= UpdateKnob(hw.knobs[0].Value(), currentSettings->inputGain,
-                          [](float v) { inputGain.SetGain(KnobToNormalized(v)); });
-    changed |= UpdateKnob(hw.knobs[1].Value(), currentSettings->outputVolume,
-                          [](float v) { outputVolume.SetGain(KnobToNormalized(v)); });
-    changed |= UpdateKnob(hw.knobs[2].Value(), currentSettings->reverbMix,
-                          [](float v) { reverbProcessor.setMix(v); });
-    changed |= UpdateKnob(hw.knobs[3].Value(), currentSettings->bass,
-                          [](float v) { eq.SetBass(KnobToNormalized(v)); });
-    changed |= UpdateKnob(hw.knobs[4].Value(), currentSettings->mid,
-                          [](float v) { eq.SetMid(KnobToNormalized(v)); });
-    changed |= UpdateKnob(hw.knobs[5].Value(), currentSettings->treble,
-                          [](float v) { eq.SetTreble(KnobToNormalized(v)); });
-    if (changed) SaveSettingsDebounced();
+    UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob,
+               [](float) {});
+    UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob,
+               [](float) {});
+    UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob,
+               [](float) {});
+    UpdateKnob(hw.knobs[3].Value(), currentBassKnob,
+               [](float) {});
+    UpdateKnob(hw.knobs[4].Value(), currentMidKnob,
+               [](float) {});
+    UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob,
+               [](float) {});
 }
 
 void CheckSettingsSave() {
@@ -409,10 +462,15 @@ static void InitReverbOrHalt() {
     }
     if (InterpDelayArena::exhausted()) {
         // The arena wasn't big enough: some delay lines fell back to heap
-        // (or failed). Surface it — even if we didn't throw, the reverb may
-        // be silently broken.
+        // (or failed). Treat this as fatal so the NAM heap is not consumed
+        // unpredictably by reverb buffers.
         ShowMessage("Reverb arena", "underprovisioned");
-        hw.DelayMs(ERROR_DISPLAY_TIME_MS);
+        while (true) {
+            hw.SetLed(0, 1.0f); hw.SetLed(1, 1.0f); hw.UpdateLeds();
+            hw.DelayMs(100);
+            hw.SetLed(0, 0.0f); hw.SetLed(1, 0.0f); hw.UpdateLeds();
+            hw.DelayMs(100);
+        }
     }
     // After construction, further InterpDelay creation shouldn't happen; the
     // reverb doesn't dynamically add delays. Clear the arena pointer so any
@@ -442,13 +500,14 @@ int main(void) {
     // Reverb (allocates from SDRAM arena).
     InitReverbOrHalt();
 
-    // Apply saved control values.
-    inputGain.SetGain(KnobToNormalized(currentSettings->inputGain));
-    outputVolume.SetGain(KnobToNormalized(currentSettings->outputVolume));
-    reverbProcessor.setMix(currentSettings->reverbMix);
-    eq.SetBass(KnobToNormalized(currentSettings->bass));
-    eq.SetMid(KnobToNormalized(currentSettings->mid));
-    eq.SetTreble(KnobToNormalized(currentSettings->treble));
+    // Physical knobs are the source of truth; defaults are only used until
+    // ADC readings are available below.
+    inputGain.SetGain(KnobToNormalized(currentInputGainKnob));
+    outputVolume.SetGain(KnobToNormalized(currentOutputVolumeKnob));
+    reverbProcessor.setMix(currentReverbMixKnob);
+    eq.SetBass(KnobToNormalized(currentBassKnob));
+    eq.SetMid(KnobToNormalized(currentMidKnob));
+    eq.SetTreble(KnobToNormalized(currentTrebleKnob));
 
     // Enable NAM loudness normalization to -18 dBFS-ish.
     namProcessor.setSampleRate(hw.AudioSampleRate());
@@ -471,7 +530,14 @@ int main(void) {
     hw.SetAudioBypass(currentBypassState);
 
     hw.StartAdc();
+    for (int i = 0; i < 20; ++i) {
+        hw.ProcessAllControls();
+        hw.DelayMs(1);
+    }
+    HandleKnobs();
+
     hw.StartAudio(AudioCallback);
+    audioStarted = true;
 
     while (true) {
         hw.ProcessAllControls();

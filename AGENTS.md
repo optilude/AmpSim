@@ -32,10 +32,11 @@ make
 
 ## Architecture & Memory
 
-- **APP_TYPE = BOOT_QSPI**: Firmware runs from QSPI flash (~736 KB binary, too large for SRAM)
+- **APP_TYPE = BOOT_QSPI**: Firmware runs from QSPI flash (~733 KB text+data, too large for SRAM; BOOT_SRAM overflows by ~254 KB)
+- **Settings persistence**: Do not use QSPI `PersistentStorage` while running `BOOT_QSPI`; libDaisy rejects QSPI erase/write when executing from QSPI. Use internal flash or another BOOT_QSPI-safe backend for persisted model/effect state.
 - **Submodule fork**: Uses `oyama/NeuralAmpModelerCore` branch `add-rp2350-support` (not upstream)
 - **No TLS**: Bare-metal has no `thread_local` support. Compat shim at `include/compat/mutex` shadows `std::mutex`
-- **Reverb delay lines in SDRAM**: The Dattorro tank + input APFs + pre-delay total ~1 MB (measured); they are allocated from a 1 MiB `g_reverb_arena` in `.sdram_bss`. `main()` installs the arena via `InterpDelayArena::set()` BEFORE calling `reverbProcessor.init()`. Do not construct `Dattorro` at global scope — it must run after the arena is armed. See `src/reverb_arena.{h,cpp}` and `src/dattorro/dsp/delays/InterpDelay.hpp`.
+- **Reverb delay lines in SDRAM**: The Dattorro tank + input APFs + pre-delay are allocated from a 1 MiB `g_reverb_arena` in `.sdram_bss`. `main()` installs the arena via `InterpDelayArena::set()` BEFORE calling `reverbProcessor.init()`. Do not construct `Dattorro` at global scope — it must run after the arena is armed. See `src/reverb_arena.{h,cpp}` and `src/dattorro/dsp/delays/InterpDelay.hpp`.
 - **NAM JSON in flash**: `tools/nam_to_header.py` emits models as raw C string literals so they live in `.rodata` (QSPI), not on the SRAM heap.
 
 ## Testing

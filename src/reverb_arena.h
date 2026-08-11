@@ -8,13 +8,9 @@
 // used by InterpDelayArena.
 //
 // Sizing:
-//   Measured budget at 48 kHz, maxTimeScale=4, maxLfoDepth=16:
-//     tank delays:        ~787 KB
-//     input APFs (4):     ~28  KB
-//     pre-delay (200 ms): ~38  KB
-//     ------------------------------
-//     total:              ~853 KB
-//   We reserve 1 MiB (~262144 floats) for headroom and future changes.
+//   The current Flick/MuleBox-style plate preset fits in this 1 MiB arena.
+//   Desktop tests assert that construction consumes the arena without falling
+//   back to heap storage.
 //
 // Ownership:
 //   The arena is a single .sdram_bss array. main() installs the arena

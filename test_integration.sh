@@ -4,7 +4,7 @@
 # Runs three desktop test suites (NAM, reverb, EQ), builds the Daisy
 # firmware, and checks binary sizes. Meant to be run before every commit.
 
-set -e
+set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
 cd "$REPO"
@@ -24,11 +24,11 @@ NAM_CXXFLAGS="$DESKTOP_CXXFLAGS \
 
 # 1. NAM desktop test ---------------------------------------------------------
 echo "Test 1: NAM desktop"
+rm -f test_nam test_reverb test_eq build/AmpSim.bin build/AmpSim.elf
 g++ $NAM_CXXFLAGS -o test_nam test_nam.cpp \
     src/nam_processor.cpp \
     NeuralAmpModelerCore/NAM/*.cpp \
-    NeuralAmpModelerCore/NAM/wavenet/*.cpp \
-    2>&1 | grep -v 'note:' | grep -v 'parameter passing' || true
+    NeuralAmpModelerCore/NAM/wavenet/*.cpp
 [ -f test_nam ] || { echo "ERROR: failed to build test_nam"; exit 1; }
 ./test_nam
 echo ""
@@ -48,7 +48,7 @@ echo ""
 # 4. Daisy build --------------------------------------------------------------
 echo "Test 4: Daisy build"
 make clean > /dev/null 2>&1 || true
-make 2>&1 | tail -20
+make
 [ -f build/AmpSim.bin ] || { echo "ERROR: Daisy build failed"; exit 1; }
 echo "OK build/AmpSim.bin exists"
 echo ""

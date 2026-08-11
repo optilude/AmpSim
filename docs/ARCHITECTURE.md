@@ -30,8 +30,8 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
 - **Bass**: Low shelf at 100Hz, ±12dB
 - **Mid**: Peaking filter at 1kHz, ±12dB
 - **Treble**: High shelf at 4kHz, ±12dB
-- Uses DaisySP Svf filters
-- Optimized processing with frequency caching
+- Uses RBJ cookbook biquad filters
+- Coefficients are recomputed only when knob changes pass the deadband
 
 ### NAM Processor (`nam_processor.h/cpp`)
 - A2-Lite architecture (fast path enabled)
@@ -49,8 +49,8 @@ Input → Input Gain → NAM → 3-Band EQ → Reverb → Output Volume → Outp
   - Tank Diffusion: 0.85
   - Modulation: Speed 0.8, Depth 1.5
 - CPU usage: ~12-18% @ 48kHz (unmeasured on hardware yet)
-- Pre-delay: 200 ms
-- Delay-line memory: **~1008 KB (measured)** — held in SDRAM via a static
+- Pre-delay: configurable in the Dattorro engine; current preset uses 0 ms
+- Delay-line memory: held in SDRAM via a static
   1 MiB arena (`g_reverb_arena` in `.sdram_bss`). See `src/reverb_arena.h`.
   The `Dattorro` object is constructed only after `InterpDelayArena::set()`
   is called from `main()` so its delay buffers land in SDRAM instead of
@@ -96,6 +96,11 @@ Running from QSPI flash adds ~10-20 cycles latency per instruction fetch;
 acceptable for this application. The hot NAM inner loops still hit the
 D-cache and I-cache.
 
+`BOOT_SRAM` was tested and does not fit: `.text` uses roughly 734 KB against a
+480 KB SRAM application region, before considering NAM runtime heap. This is why
+stock QSPI `PersistentStorage` cannot be used directly for settings while the
+program executes from QSPI.
+
 ### Why SDRAM for the reverb?
 The Dattorro tank delay lines with `maxTimeScale=4.0` and 48 kHz sample
 rate total ~853 KB. Two models' NAM state + Eigen scratch use most of the
@@ -124,8 +129,8 @@ allocated on the SRAM heap before `main()` could even show a splash.
 ### Latency
 - NAM processing: ~1ms (48 samples)
 - EQ: Negligible (<0.1ms)
-- Reverb: 0-200ms pre-delay (user configurable)
-- Total throughput: ~1.1ms + pre-delay
+- Reverb: preset-dependent pre-delay
+- Total throughput: ~1.1ms + configured pre-delay
 
 ### Memory Footprint (measured)
 - Code+rodata: 736 KB (QSPI)
@@ -158,29 +163,27 @@ Bare-metal firmware for deterministic timing:
 ### PersistentSettings Structure
 ```cpp
 struct PersistentSettings {
+    uint32_t schemaVersion;     // Settings schema guard
     int32_t modelIndex;        // Current NAM model
-    bool namEnabled;           // NAM on/off
-    bool reverbEnabled;        // Reverb on/off
-    float inputGain;           // Knob 0 position
-    float outputVolume;        // Knob 1 position
-    float reverbMix;           // Knob 2 position
-    float bass;                // Knob 3 position
-    float mid;                 // Knob 4 position
-    float treble;              // Knob 5 position
+    uint8_t namEnabled;        // NAM on/off
+    uint8_t reverbEnabled;     // Reverb on/off
 };
 ```
 
+Knob positions are not persisted. The physical pots are absolute controls and
+become the source of truth after ADC warm-up at boot. Runtime persistence is
+currently disabled while the firmware executes from QSPI because libDaisy's QSPI
+driver rejects erase/write in that mode.
+
 ### Storage Details
-- **Location**: QSPI flash sector
+- **Location**: pending BOOT_QSPI-safe storage backend, preferably internal flash
 - **Size**: ~32 bytes
-- **Mechanism**: Daisy's PersistentStorage with wear leveling
-- **Lifetime**: 10,000+ write cycles
-- **Debounce**: Saves 2 seconds after last change
+- **Mechanism**: pending; do not use QSPI `PersistentStorage` directly while running from QSPI
+- **Debounce**: state changes are still dirty-tracked for a future storage hook
 
 ### Persistence Triggers
-- Knob changes (debounced)
-- Footswitch presses
-- Model changes (encoder click)
+- Footswitch presses (dirty-tracked)
+- Model changes (encoder click, dirty-tracked)
 - Settings validated on load (bounds checking)
 
 ## Build System Quirks
@@ -214,7 +217,7 @@ struct PersistentSettings {
 
 ### DaisySP
 - DSP library
-- Svf filter for EQ
+- Audio utilities
 - Audio utilities
 
 ## Stereo Reverb Behavior

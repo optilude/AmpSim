@@ -106,13 +106,17 @@ Before considering the firmware production-ready, verify all items on this check
 
 ### Persistence Testing
 
+Persistence is currently disabled under `BOOT_QSPI`; re-enable this checklist
+only after adding a storage backend that is safe while code executes from QSPI.
+
 - [ ] **Settings persistence across power cycles**
   1. Change all knobs to random positions
   2. Toggle NAM and Reverb states
   3. Select different model
   4. Wait 2+ seconds (for save)
   5. Power cycle (unplug, wait 5s, plug back in)
-  6. Verify all settings restored
+6. Verify model and effect on/off states restored
+7. Verify knob-controlled parameters follow physical knob positions after boot
 
 - [ ] **No save spam**
   - Rapidly rotate a knob
@@ -157,7 +161,7 @@ Before considering the firmware production-ready, verify all items on this check
 
 - [ ] **Display shows correct values**
   - dB values match perceived gain
-  - Percentages match knob positions
+- Percentages match physical knob positions
   - Model names are correct
 
 ### Error Handling Testing
@@ -168,8 +172,8 @@ Before considering the firmware production-ready, verify all items on this check
 
 - [ ] **Model load failure**
   - If model JSON is corrupt
-  - Shows "Model Load Failed!" for 5 seconds
-  - Continues with previous model
+- Shows "Load failed" for 5 seconds
+- Continues with previous model
 
 - [ ] **No models available**
   - If `NAM_MODEL_COUNT == 0`

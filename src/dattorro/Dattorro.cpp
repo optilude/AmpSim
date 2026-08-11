@@ -8,6 +8,7 @@
 Dattorro1997Tank::Dattorro1997Tank(const float initSampleRate,
                                    const float initMaxLfoDepth,
                                    const float initMaxTimeScale) :
+    maxSampleRate(initSampleRate),
     maxTimeScale(initMaxTimeScale) 
 {
     timePadding = initMaxLfoDepth;
@@ -123,7 +124,10 @@ void Dattorro1997Tank::setSampleRate(const float newSampleRate) {
 
     rescaleTapTimes();
     setTimeScale(timeScale);
-    initialiseDelaysAndApfs();
+    if (!delaysInitialised) {
+        initialiseDelaysAndApfs();
+        delaysInitialised = true;
+    }
     //clear();
 }
 
@@ -382,6 +386,7 @@ void Dattorro::setTimeScale(float timeScale) {
 #pragma GCC optimize ("Ofast")
 
 void Dattorro::setPreDelay(float t) {
+    preDelayTime = t;
     preDelay.setDelayTime(t * sampleRate);
 }
 

@@ -1,10 +1,9 @@
 // Reverb wrapper for AmpSim
 // Mono input, stereo output with Dattorro plate reverb.
 //
-// The Dattorro delay lines are large (~850 KB at 48 kHz, maxTimeScale=4)
-// and won't fit in the Daisy Seed SRAM heap. The reverb is therefore
-// constructed lazily in init() *after* an SDRAM arena has been installed
-// via InterpDelayArena::set(...) — see reverb_arena.h and main.cpp.
+// The Dattorro delay lines are large and won't fit in the Daisy Seed SRAM
+// heap. The reverb is therefore constructed lazily in init() *after* an
+// SDRAM arena has been installed via InterpDelayArena::set(...).
 //
 // Dry/wet mix is applied at the output; process() takes the source signal
 // (dry) and returns the mixed L/R stereo output.
@@ -19,7 +18,6 @@ public:
     // Call this AFTER InterpDelayArena::set(...) so buffers land in SDRAM.
     void init(float sampleRate) {
         reverb_ = std::make_unique<Dattorro>(sampleRate, 16.0f, 4.0f);
-        reverb_->setSampleRate(sampleRate);
 
         // MuleBox / Flick "plate" preset
         reverb_->setTimeScale(1.007500f);

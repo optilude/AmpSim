@@ -11,20 +11,20 @@ NAMProcessor::~NAMProcessor() = default;
 bool NAMProcessor::loadModel(const char* modelJson, size_t jsonLength)
 {
     try {
-        // Free the previous model FIRST so its heap is available for the
-        // JSON parser and new weights. Peak allocations during load are a
-        // multiple of the model size.
+        nlohmann::json config = nlohmann::json::parse(modelJson, modelJson + jsonLength);
+
+        // Free the previous model after JSON parsing so corrupt input does not
+        // kill the current sound, but before tensor allocation so model changes
+        // fit the Daisy SRAM heap.
         model.reset();
         modelLoaded = false;
         hasLoudness_ = false;
         modelLoudness_ = 0.0f;
 
-        nlohmann::json config = nlohmann::json::parse(modelJson, modelJson + jsonLength);
-
         nam::dspData returnedConfig;
-        model = nam::get_dsp(config, returnedConfig);
+        std::unique_ptr<nam::DSP> newModel = nam::get_dsp(config, returnedConfig);
 
-        if (!model) {
+        if (!newModel) {
             recomputeOutputGain();
             return false;
         }
@@ -32,22 +32,24 @@ bool NAMProcessor::loadModel(const char* modelJson, size_t jsonLength)
         // Match the max audio block size we'll ever pass. Anything larger
         // will force NAM to reallocate its input buffer (harmless but wastes
         // heap on the audio thread).
-        model->Reset(sampleRate, 256);
+        newModel->Reset(sampleRate, 256);
 
-        if (model->HasLoudness()) {
-            hasLoudness_ = true;
-            modelLoudness_ = static_cast<float>(model->GetLoudness());
+        bool newHasLoudness = false;
+        float newModelLoudness = 0.0f;
+
+        if (newModel->HasLoudness()) {
+            newHasLoudness = true;
+            newModelLoudness = static_cast<float>(newModel->GetLoudness());
         }
+
+        model = std::move(newModel);
+        hasLoudness_ = newHasLoudness;
+        modelLoudness_ = newModelLoudness;
         recomputeOutputGain();
 
         modelLoaded = true;
         return true;
     } catch (const std::exception&) {
-        model.reset();
-        modelLoaded = false;
-        hasLoudness_ = false;
-        modelLoudness_ = 0.0f;
-        outputGain_ = 1.0f;
         return false;
     }
 }

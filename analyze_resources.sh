@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 echo "=== Resource Analysis: NAM + Dattorro Reverb on Daisy Seed ==="
 echo ""
 echo "CPU Analysis"
@@ -23,66 +24,32 @@ echo "--------------"
 echo "Daisy Seed: 512KB SRAM, 8MB QSPI flash"
 echo ""
 
-# Calculate reverb delay line sizes
-cat << 'PYTHON' | python3
-# Dattorro delay line sizes at 48kHz
-sample_rate = 48000
-dattorro_rate = 29761
-scale = sample_rate / dattorro_rate
-
-delays = {
-    'Input pre-delay': 192010,  # Max pre-delay
-    'Input APF1': 141 * 8,
-    'Input APF2': 107 * 8,
-    'Input APF3': 379 * 8,
-    'Input APF4': 277 * 8,
-    'Left APF1': 672,
-    'Left Delay1': 4453,
-    'Left APF2': 1800,
-    'Left Delay2': 3720,
-    'Right APF1': 908,
-    'Right Delay1': 4217,
-    'Right APF2': 2656,
-    'Right Delay2': 3163,
-}
-
-total_samples = 0
-print("Delay Line Memory Requirements:")
-print("-------------------------------")
-for name, size in delays.items():
-    scaled = int(size * scale * 1.1)  # 1.1 for safety margin
-    total_samples += scaled
-    kb = (scaled * 4) / 1024  # 4 bytes per float
-    if kb > 10:
-        print(f"  {name:20s}: {scaled:6d} samples ({kb:6.1f} KB)")
-
-total_kb = (total_samples * 4) / 1024
-print(f"\nTotal reverb delay memory: {total_kb:.1f} KB")
-print(f"Plus filter states, LFOs: ~{total_kb * 1.2:.1f} KB total")
-PYTHON
+echo "Build Sections:"
+if [ ! -f build/AmpSim.elf ]; then
+    echo "  build/AmpSim.elf not found; run make first"
+else
+    arm-none-eabi-size build/AmpSim.elf
+    SDRAM_BSS_HEX=$(arm-none-eabi-objdump -h build/AmpSim.elf | awk '/\.sdram_bss/ {print $3}')
+    SDRAM_BSS_BYTES=$((16#${SDRAM_BSS_HEX:-0}))
+    TOTAL_BSS=$(arm-none-eabi-size build/AmpSim.elf | awk 'NR==2 {print $3}')
+    SRAM_BSS_BYTES=$((TOTAL_BSS - SDRAM_BSS_BYTES))
+    echo ""
+    echo "Interpreted memory:"
+    echo "  SRAM BSS excluding SDRAM arena: $((SRAM_BSS_BYTES / 1024)) KB"
+    echo "  SDRAM arena:                  $((SDRAM_BSS_BYTES / 1024)) KB"
+fi
 
 echo ""
-echo "Current Build:"
-arm-none-eabi-size build/AmpSim.elf | grep -E "text|data|bss" | awk '{
-    printf "  Code (QSPI):     %.1f KB\n", $1/1024
-    printf "  Initialized data: %.1f KB\n", $2/1024
-    printf "  BSS (SRAM):       %.1f KB\n", $3/1024
-}'
-echo ""
-
-echo "⚠️  WARNINGS"
+echo "WARNINGS"
 echo "-----------"
-echo "1. Pre-delay buffer is huge (192010 samples = 750KB!)"
-echo "   This is allocated in heap, not SRAM, but still significant"
-echo "2. Total reverb memory: ~250-300KB"
-echo "3. With NAM model state, total heap usage: ~400KB+"
-echo "4. Cortex-M7 has limited heap fragmentation tolerance"
+echo "1. CPU figures are estimates until measured on hardware."
+echo "2. NAM model load still uses SRAM heap for JSON parse and tensors."
+echo "3. Settings persistence is disabled until a BOOT_QSPI-safe backend exists."
 echo ""
 
-echo "💡 Recommendations"
+echo "Recommendations"
 echo "------------------"
 echo "1. TEST CPU FIRST: Flash and check for audio dropouts"
 echo "2. MONITOR HEAP: Check for allocation failures"
-echo "3. CONSIDER: Reduce pre-delay max size (currently 4 seconds!)"
-echo "4. ALTERNATIVE: Use static allocation for delay lines"
-echo "5. FALLBACK: Simplified reverb if CPU/memory issues arise"
+echo "3. FALLBACK: Simplified reverb if CPU/memory issues arise"
+echo "4. Persistence: use internal flash or another BOOT_QSPI-safe backend"

@@ -11,7 +11,7 @@ CPP_STANDARD = -std=gnu++17
 CPP_SOURCES = src/main.cpp \
               src/nam_processor.cpp \
               src/reverb_arena.cpp \
-              hardware/guitar_pedal_125b.cpp \
+              Hardware/guitar_pedal_125b.cpp \
               NeuralAmpModelerCore/NAM/activations.cpp \
               NeuralAmpModelerCore/NAM/container.cpp \
               NeuralAmpModelerCore/NAM/conv1d.cpp \
@@ -30,7 +30,7 @@ CPP_SOURCES = src/main.cpp \
 # Include paths (compat first to shadow std::mutex)
 C_INCLUDES = -Iinclude/compat \
              -Isrc \
-             -Ihardware \
+             -IHardware \
              -INeuralAmpModelerCore \
              -INeuralAmpModelerCore/Dependencies/eigen \
              -INeuralAmpModelerCore/Dependencies/nlohmann
@@ -39,9 +39,10 @@ C_INCLUDES = -Iinclude/compat \
 LIBDAISY_DIR = libDaisy
 DAISYSP_DIR = DaisySP
 
-# Use Daisy bootloader: application is written to QSPI flash via DFU,
-# then runs from QSPI flash (not copied to SRAM).
-# Required because NAM + Eigen + JSON libraries are too large for SRAM.
+# Use Daisy bootloader: application is written to QSPI flash via DFU, then
+# runs from QSPI flash (not copied to SRAM). Required because NAM + Eigen +
+# JSON libraries are too large for SRAM: a BOOT_SRAM test overflows SRAM by
+# ~254 KB (text alone is ~734 KB vs a 480 KB SRAM app region).
 APP_TYPE = BOOT_QSPI
 
 # Use the 2000ms grace period bootloader

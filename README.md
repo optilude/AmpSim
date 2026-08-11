@@ -11,7 +11,7 @@ AmpSim combines cutting-edge neural amp modeling with studio-quality reverb in a
 - **True Bypass Relay**: Hardware bypass for pure analog signal path
 - **6 Control Knobs**: Input gain, output volume, reverb mix, 3-band EQ
 - **Rotary Encoder**: Browse and select from multiple amp models
-- **State Persistence**: All settings saved automatically to flash memory
+- **State Schema**: Firmware tracks model/effect state; persistence needs a BOOT_QSPI-safe backend
 - **Stereo Output**: Reverb produces stereo widening effect
 
 ## Hardware
@@ -127,24 +127,22 @@ Line 5: [Instructions]
 
 ## State Persistence
 
-All user settings are automatically saved to flash memory:
+The firmware tracks model selection and effect on/off states in RAM. Flash
+persistence is intentionally disabled while running from QSPI because libDaisy
+does not allow QSPI erase/write when code executes from QSPI. `BOOT_SRAM` was
+tested and does not fit this firmware (about 254 KB over the SRAM app region).
+The six knobs are absolute controls: their physical positions are the source of
+truth after boot and are not persisted.
 
-**What's saved:**
+**What will be persisted once a safe storage backend is added:**
 - Current NAM model selection
 - NAM on/off state
 - Reverb on/off state
-- All 6 knob positions
 
-**When it saves:**
-- 2 seconds after any change (debounced)
-- Immediately on footswitch press
-- Immediately on model change
-
-**Persistence:**
-- Settings survive power cycles
-- Stored in QSPI flash with wear leveling
-- 10,000+ write cycles lifespan
-- Validates settings on load (handles corruption)
+**Current persistence status:**
+- Runtime state resets to defaults on power cycle
+- Persisted storage should be implemented with internal flash or a carefully audited RAM-resident QSPI write path before release
+- Settings schema validates model/effect state bounds when storage is re-enabled
 
 ## Building & Flashing
 
@@ -261,11 +259,12 @@ The conversion tool extracts the A2-Lite model (submodel 0) from the .nam file a
 - **CPU usage**: NOT YET MEASURED — estimates in `docs/ARCHITECTURE.md`
   are extrapolated from bkshepherd's RP2350 numbers, not observed on this
   hardware. Expect to re-benchmark once the board is in hand.
-- **Latency**: 1 ms audio block (48 samples @ 48 kHz), plus reverb pre-delay
+- **Latency**: 1 ms audio block (48 samples @ 48 kHz), plus any configured reverb pre-delay
 
 **Performance characteristics:**
 - Cortex-M7 @ 400MHz, running from QSPI (BOOT_QSPI)
 - QSPI flash execution adds ~10-20 cycles per instruction fetch
+- `BOOT_SRAM` currently does not fit; model/effect persistence therefore needs a non-QSPI storage backend or RAM-resident QSPI writer
 - NAM is processed once per audio block (not per sample) to preserve the
   a2_fast fast-path SIMD/loop optimizations
 - Display updates throttled to 30 FPS for responsiveness
@@ -282,8 +281,8 @@ dry/wet math, EQ response, model conversion, and the Daisy build itself:
 ```
 
 Pass criteria:
-- NAM: model loads, output is non-trivial, loudness normalization behaves
-- Reverb: SDRAM arena consumed, mix knob crossfades linearly
+- NAM: generated models load, output is finite/bounded, loudness normalization behaves, failed load preserves the previous model
+- Reverb: SDRAM arena consumed without fallback, mix knob crossfades linearly
 - EQ: flat setting is bit-exact identity, +/- 12 dB targets are hit at
   centre frequencies within 2 dB
 - Build: SRAM .bss under 300 KB, QSPI under 7 MB
@@ -301,7 +300,7 @@ After `make program`:
 - [ ] All 6 knobs respond smoothly
 - [ ] Reverb mix knob crossfades between dry and wet (not a switch)
 - [ ] Encoder browses models, click loads model
-- [ ] Settings persist after power cycle (wait 2 s before power off)
+- [ ] Model/effect persistence works after a BOOT_QSPI-safe backend is added
 - [ ] No audio dropouts during extended play
 - [ ] EQ response is musical (bass/mid/treble)
 - [ ] Reverb adds stereo width
@@ -337,9 +336,8 @@ After `make program`:
 **Symptoms**: Settings reset on power cycle
 
 **Solutions:**
-1. Wait 2 seconds after changes before power off
-2. Check QSPI flash isn't corrupted
-3. Try factory reset: rebuild and flash fresh firmware
+Persistence is currently disabled under `BOOT_QSPI`. This is expected until a
+safe storage backend is implemented.
 
 ### Display Issues
 

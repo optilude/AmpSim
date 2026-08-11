@@ -299,7 +299,7 @@ CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 ```makefile
 C_INCLUDES = -Iinclude/compat \
              -Isrc \
-             -Ihardware \
+             -IHardware \
              ...
 ```
 

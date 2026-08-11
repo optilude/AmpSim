@@ -36,6 +36,7 @@ int main() {
     printf("[INFO] Reverb arena used: %zu floats (%.1f KB)\n",
            arenaUsed, arenaUsed * 4.0 / 1024.0);
     if (arenaUsed == 0) return fail("arena not consumed by reverb init");
+    if (InterpDelayArena::exhausted()) return fail("reverb arena exhausted and fell back to heap");
     if (arenaUsed > 262144) return fail("arena exhausted");
     printf("[PASS] Reverb allocated from arena\n");
 

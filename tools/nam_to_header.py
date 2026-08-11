@@ -2,7 +2,7 @@
 """
 Convert NAM .nam files to C++ header format for Daisy Seed
 
-This tool extracts the A2-Lite (submodel 0) model JSON from NAM captures
+This tool extracts A2-Lite model JSON from NAM captures
 and generates a C++ header file that can be compiled into the firmware.
 
 The generated header stores the JSON as raw C string literals in .rodata
@@ -48,12 +48,20 @@ def extract_a2_lite_model(nam_file_path):
     with open(nam_file_path, 'r') as f:
         data = json.load(f)
 
+    def is_a2_lite(model):
+        if not isinstance(model, dict) or model.get('architecture') != 'WaveNet':
+            return False
+        layers = model.get('config', {}).get('layers', [])
+        if not layers:
+            return True
+        return layers[0].get('channels') == 3
+
     if data.get('architecture') == 'SlimmableContainer':
         submodels = data.get('config', {}).get('submodels', [])
-        if submodels:
-            submodel = submodels[0]
-            if 'model' in submodel:
-                return submodel['model']
+        for submodel in submodels:
+            model = submodel.get('model')
+            if is_a2_lite(model):
+                return model
     elif data.get('architecture') == 'WaveNet':
         return data
 
@@ -71,6 +79,11 @@ def to_raw_literal(name, s):
     delimiter is safe; use "namjson" to be conservative.
     """
     return f'static const char {name}[] = R"namjson({s})namjson";\n'
+
+
+def cpp_string_literal(s):
+    """Return a valid escaped C++ string literal for display metadata."""
+    return json.dumps(s)
 
 
 def generate_header(nam_files):
@@ -137,7 +150,7 @@ def generate_header(nam_files):
     parts.append("static const NAMModel nam_models[NAM_MODEL_COUNT] = {\n")
     for e in entries:
         parts.append(
-            f'    {{ "{e["name"]}", "{e["variant"]}", '
+            f'    {{ {cpp_string_literal(e["name"])}, {cpp_string_literal(e["variant"])}, '
             f'{e["json_var"]}, sizeof({e["json_var"]}) - 1 }},\n'
         )
     parts.append("};\n")

@@ -24,7 +24,7 @@ NAM_CXXFLAGS="$DESKTOP_CXXFLAGS \
 
 echo "Test 0: Capture conversion"
 rm -f test_nam test_reverb test_eq build/AmpSim.bin build/AmpSim.elf
-python3 tools/build_capture_blob.py Captures/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
+python3 tools/build_capture_blob.py Models/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
 echo ""
 
 # 1. NAM desktop test ---------------------------------------------------------
@@ -100,11 +100,11 @@ echo ""
 
 # 6. Model conversion tool ----------------------------------------------------
 echo "Test 6: NAM model conversion tool"
-python3 tools/build_capture_blob.py Captures/ --out-bin /tmp/test_capture_data.bin --out-header /tmp/test_capture_index.h --out-map /tmp/test_capture_data.map
+python3 tools/build_capture_blob.py Models/ --out-bin /tmp/test_capture_data.bin --out-header /tmp/test_capture_index.h --out-map /tmp/test_capture_data.map
 [ -s /tmp/test_capture_data.bin ] || { echo "ERROR: capture conversion produced empty data"; exit 1; }
-grep -q 'CAPTURE_COUNT' /tmp/test_capture_index.h || { echo "ERROR: header missing CAPTURE_COUNT"; exit 1; }
+grep -q 'MODEL_COUNT' /tmp/test_capture_index.h || { echo "ERROR: header missing MODEL_COUNT"; exit 1; }
 rm -f /tmp/test_capture_data.bin /tmp/test_capture_index.h /tmp/test_capture_data.map
-echo "OK model conversion works on Captures/"
+echo "OK model conversion works on Models/"
 echo ""
 
 echo "================================"

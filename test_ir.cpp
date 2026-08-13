@@ -130,27 +130,29 @@ int main() {
         return fail("testing/di-stratocaster.wav missing or unsupported (need 48kHz PCM)");
     }
 
-    std::vector<CaptureEntry> entries(capture_entries, capture_entries + CAPTURE_COUNT);
-    for (CaptureEntry& entry : entries) {
-        const uintptr_t offset = entry.qspi_address - CAPTURE_DATA_QSPI_BASE;
-        if (offset + entry.byte_count > captureBlob.size()) return fail("capture entry outside blob");
-        entry.qspi_address = reinterpret_cast<uintptr_t>(captureBlob.data() + offset);
+    std::vector<ModelEntry> entries(model_entries, model_entries + MODEL_COUNT);
+    for (ModelEntry& entry : entries) {
+        if (entry.ir_byte_count > 0) {
+            const uintptr_t offset = entry.ir_qspi_address - CAPTURE_DATA_QSPI_BASE;
+            if (offset + entry.ir_byte_count > captureBlob.size()) return fail("capture entry outside blob");
+            entry.ir_qspi_address = reinterpret_cast<uintptr_t>(captureBlob.data() + offset);
+        }
     }
 
-    const CaptureEntry* irEntry = nullptr;
-    for (const CaptureEntry& entry : entries) {
-        if (entry.type == CaptureType::CabinetIr) {
+    const ModelEntry* irEntry = nullptr;
+    for (const ModelEntry& entry : entries) {
+        if (entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) {
             irEntry = &entry;
             break;
         }
     }
-    if (!irEntry) return fail("no CabinetIr entry in capture index");
+    if (!irEntry) return fail("no IrOnly or NamAndIr entry in capture index");
 
     std::vector<float> irFreq(IRProcessor::kMaxPartitions * ConvolutionEngine::N);
     std::vector<float> fdl(IRProcessor::kMaxPartitions * ConvolutionEngine::N);
     IRProcessor ir;
     ir.init(irFreq.data(), fdl.data());
-    if (!ir.loadCapture(*irEntry)) return fail("IR loadCapture failed");
+    if (!ir.loadModel(*irEntry)) return fail("IR loadModel failed");
 
     float in[ConvolutionEngine::L]{};
     float out[ConvolutionEngine::L]{};

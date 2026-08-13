@@ -230,7 +230,7 @@ make program
 
 ## Adding New Models
 
-### Obtaining NAM Captures
+### Obtaining NAM Models
 
 1. **Train your own**: Use [NeuralAmpModeler](https://github.com/sdatkinson/NeuralAmpModeler) to capture your amp
 2. **Download from community**: Browse [ToneHunt](https://tonehunt.org) for shared models
@@ -238,8 +238,8 @@ make program
 ### Installing New Models
 
 ```bash
-# 1. Copy .nam file to Captures/ directory
-cp ~/Downloads/my_amp.nam Captures/
+# 1. Copy .nam file to Models/ directory
+cp ~/Downloads/my_amp.nam Models/
 
 # 2. Rebuild and flash; the capture blob is generated automatically
 make clean && make
@@ -289,7 +289,7 @@ Pass criteria:
 - EQ: flat setting is bit-exact identity, +/- 12 dB targets are hit at
   centre frequencies within 2 dB
 - Build: `BOOT_SRAM` app fits, capture blob fits QSPI, settings/captures do not overlap
-- Model conversion: produces valid `capture_index.h` and `capture_data.bin` from `Captures/`
+- Model conversion: produces valid `capture_index.h` and `capture_data.bin` from `Models/`
 
 ### On-hardware checklist
 
@@ -328,9 +328,9 @@ After `make program`:
 **Solutions:**
 1. Ensure `capture_index.h` and `build/capture_data.bin` were generated:
    ```bash
-   python3 tools/build_capture_blob.py Captures/
+   python3 tools/build_capture_blob.py Models/
    ```
-2. Verify .nam files exist in `Captures/`
+2. Verify files exist in `Models/`
 3. Rebuild firmware: `make clean && make`
 4. Flash: `make program`
 
@@ -410,7 +410,7 @@ AmpSim/
 │   └── make_combined_image.py
 ├── patches/               # Submodule patches
 │   └── remove_thread_local.patch
-├── Captures/              # NAM model files (.nam)
+├── Models/                # NAM model files (.nam) and IR cabinet files (.wav)
 ├── docs/                  # Technical documentation
 │   ├── ARCHITECTURE.md    # System design
 │   ├── DEVELOPMENT.md     # Build system details

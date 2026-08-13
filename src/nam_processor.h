@@ -6,11 +6,11 @@
 
 // Thin wrapper around a NAM (Neural Amp Modeler) DSP model.
 //
-// A .nam capture is fed in as a raw JSON string. NAM allocates its
+// A .nam model is fed in as a raw JSON string. NAM allocates its
 // weight tensors on the heap during loadModel(); previous state is
 // released before parsing to keep peak heap usage bounded.
 //
-// The model exposes a "loudness" figure (LUFS) via the capture
+// The model exposes a "loudness" figure (LUFS) via the model
 // metadata. If enabled, an output post-gain is applied to normalize
 // disparate models to a common perceived level (see setLoudnessTarget).
 class NAMProcessor
@@ -19,8 +19,8 @@ public:
     NAMProcessor();
     ~NAMProcessor();
 
-    // Load an A2 Lite capture from QSPI-backed packed weights.
-    bool loadCapture(const CaptureEntry& capture);
+    // Load an A2 Lite model from QSPI-backed packed weights.
+    bool loadModel(const ModelEntry& model);
 
     // Process a block of samples. NAM is designed for block processing;
     // callers should pass entire audio blocks (e.g. 48 samples), NOT

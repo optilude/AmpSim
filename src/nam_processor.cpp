@@ -8,16 +8,19 @@ NAM_A2_STATE_DATA static nam_a2::Player s_a2Player;
 NAMProcessor::NAMProcessor() = default;
 NAMProcessor::~NAMProcessor() = default;
 
-bool NAMProcessor::loadCapture(const CaptureEntry& capture)
+bool NAMProcessor::loadModel(const ModelEntry& model)
 {
-    if (capture.type != CaptureType::NamA2Lite
-        || capture.item_count != nam_a2::kA2WeightCount
-        || capture.byte_count != nam_a2::kA2WeightCount * sizeof(float)) {
+    if (model.type != ModelType::NamOnly && model.type != ModelType::NamAndIr) {
+        return false;
+    }
+    
+    if (model.nam_item_count != nam_a2::kA2WeightCount
+        || model.nam_byte_count != nam_a2::kA2WeightCount * sizeof(float)) {
         return false;
     }
 
-    const float* weights = reinterpret_cast<const float*>(capture.qspi_address);
-    if (!s_a2Player.load_weights(weights, capture.item_count)) {
+    const float* weights = reinterpret_cast<const float*>(model.nam_qspi_address);
+    if (!s_a2Player.load_weights(weights, model.nam_item_count)) {
         return false;
     }
 
@@ -25,8 +28,8 @@ bool NAMProcessor::loadCapture(const CaptureEntry& capture)
     blockIndex_ = 0;
     std::fill(inputBlock_, inputBlock_ + nam_a2::kBlockSize, 0.0f);
     std::fill(outputBlock_, outputBlock_ + nam_a2::kBlockSize, 0.0f);
-    hasLoudness_ = capture.has_loudness != 0;
-    modelLoudness_ = capture.loudness_db;
+    hasLoudness_ = model.nam_has_loudness != 0;
+    modelLoudness_ = model.nam_loudness_db;
     recomputeOutputGain();
     return true;
 }

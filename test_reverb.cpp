@@ -47,7 +47,7 @@ int main() {
     // 2) mix=0 => pure dry.
     rp.setMix(0.0f);
     float l = 0, r = 0;
-    rp.process(0.7f, &l, &r);
+    rp.process(0.7f, 0.7f, &l, &r);
     if (std::fabs(l - 0.7f) > 1e-6f || std::fabs(r - 0.7f) > 1e-6f) {
         printf("l=%.4f r=%.4f expected 0.7\n", l, r);
         return fail("mix=0 must give dry-only output");
@@ -63,7 +63,7 @@ int main() {
     float maxAbs = 0.0f;
     for (int i = 0; i < 24000; ++i) {  // 500 ms at 48kHz
         const float x = (i == 0) ? 1.0f : 0.0f;
-        rp.process(x, &l, &r);
+        rp.process(x, x, &l, &r);
         maxAbs = std::max(maxAbs, std::max(std::fabs(l), std::fabs(r)));
     }
     if (maxAbs < 1e-4f) {
@@ -74,7 +74,7 @@ int main() {
 
     // 4) Silent input for a long time should decay towards zero.
     for (int i = 0; i < 480000; ++i) {  // 10 s
-        rp.process(0.0f, &l, &r);
+        rp.process(0.0f, 0.0f, &l, &r);
     }
     if (std::fabs(l) > 0.01f || std::fabs(r) > 0.01f) {
         printf("l=%.4f r=%.4f\n", l, r);
@@ -91,14 +91,14 @@ int main() {
     rp.setMix(1.0f);
     float wetOnly = 0.0f;
     for (int i = 0; i < 4800; ++i) {  // 100 ms warmup
-        rp.process(1.0f, &l, &r);
+        rp.process(1.0f, 1.0f, &l, &r);
         wetOnly = l;
     }
     rp.clear();
     rp.setMix(0.5f);
     float halfMix = 0.0f;
     for (int i = 0; i < 4800; ++i) {
-        rp.process(1.0f, &l, &r);
+        rp.process(1.0f, 1.0f, &l, &r);
         halfMix = l;
     }
     const float expectedDryContribution = 0.5f * 1.0f + 0.5f * wetOnly;

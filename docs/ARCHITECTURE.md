@@ -7,14 +7,14 @@ AmpSim is a guitar amp simulator running on the Electro-Smith Daisy Seed (STM32H
 ## Signal Chain
 
 ```
-Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
-           ↓                ↓                         ↓
-        ±20dB       selected capture              Mono→Stereo
+Input → Input Gain → NAM A2 Lite and/or Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
+           ↓                  ↓                           ↓
+        ±20dB          selected model                 Mono→Stereo
 ```
 
 **Processing Order Rationale:**
 1. **Input Gain**: Optimizes signal level for NAM model input
-2. **Model engine**: Either A2 Lite NAM or cabinet IR; the two are mutually exclusive
+2. **Model engine**: NAM A2 Lite and/or cabinet IR (can run sequentially if put in the same subfolder)
 3. **EQ**: Post-model tone shaping
 4. **Reverb**: Dattorro plate reverb (mono input, stereo output)
 5. **Output Volume**: Final level control before output

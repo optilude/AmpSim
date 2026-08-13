@@ -151,13 +151,13 @@ make program
 
 ## Model Conversion
 
-### Captures To QSPI Blob
+### Models To QSPI Blob
 
-NAM models (`.nam`) and cabinet IRs (`.wav`) are converted to a QSPI capture blob before building:
+NAM models (`.nam`) and cabinet IRs (`.wav`) are converted to a QSPI block before building:
 
 ```bash
-# Convert captures and IRs
-python3 tools/build_capture_blob.py Captures/ --irs IRs
+# Convert models
+python3 tools/build_capture_blob.py Models/
 
 # Then rebuild
 make clean
@@ -166,18 +166,20 @@ make
 
 ### Adding New Models
 
-1. **Obtain NAM capture:**
+1. **Obtain NAM model/IR:**
    - Train with [NeuralAmpModeler](https://github.com/sdatkinson/NeuralAmpModeler)
    - Or download from [NAM community](https://tonehunt.org)
 
-2. **Add to Captures folder:**
+2. **Add to Models folder:**
    ```bash
-   cp ~/Downloads/my_amp.nam Captures/
+   mkdir -p "Models/My Amp"
+   cp ~/Downloads/my_amp.nam "Models/My Amp/"
+   cp ~/Downloads/my_cab.wav "Models/My Amp/"
    ```
 
 3. **Convert and rebuild:**
    ```bash
-   python3 tools/build_capture_blob.py Captures/ --irs IRs
+   python3 tools/build_capture_blob.py Models/
    make clean && make
    ```
 
@@ -189,9 +191,9 @@ make
 ### Model Format
 
 The conversion tool accepts:
-- Exact NAM A2 Lite captures: WaveNet, 3 channels, 23 layers, 1871 weights
-- 48 kHz mono/stereo WAV cabinet IRs, normalized and stored as 4096-sample captures
-- Up to 128 total captures
+- Exact NAM A2 Lite models: WaveNet, 3 channels, 23 layers, 1871 weights
+- 48 kHz mono/stereo WAV cabinet IRs, normalized and stored as 4096-sample models
+- Up to 128 total models
 
 It emits `build/capture_data.bin`, `src/capture_index.h`, and `build/capture_data.map`.
 

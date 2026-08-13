@@ -4,27 +4,30 @@
 #include <cstddef>
 #include <cstdint>
 
-enum class CaptureType : uint8_t { NamA2Lite = 0, CabinetIr = 1 };
+enum class ModelType : uint8_t { NamOnly = 0, IrOnly = 1, NamAndIr = 2 };
 
-struct CaptureEntry {
-    CaptureType type;
+struct ModelEntry {
+    ModelType type;
     const char* model_name;
     const char* variant_name;
-    uintptr_t qspi_address;
-    uint32_t byte_count;
-    uint32_t item_count;
-    float loudness_db;
-    uint8_t has_loudness;
+    uintptr_t nam_qspi_address;
+    uint32_t nam_byte_count;
+    uint32_t nam_item_count;
+    float nam_loudness_db;
+    uint8_t nam_has_loudness;
+    uintptr_t ir_qspi_address;
+    uint32_t ir_byte_count;
+    uint32_t ir_item_count;
     uint32_t crc32;
 };
 
-static constexpr int MAX_CAPTURE_COUNT = 128;
-static constexpr int CAPTURE_COUNT = 3;
+static constexpr int MAX_MODEL_COUNT = 128;
+static constexpr int MODEL_COUNT = 3;
 static constexpr uintptr_t CAPTURE_DATA_QSPI_BASE = 0x900c1000;
 static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x000c0000;
 
-static const CaptureEntry capture_entries[CAPTURE_COUNT] = {
-    { CaptureType::NamA2Lite, "Princeton Deluxe", "Princeton Deluxe - B V7 T6 B4", CAPTURE_DATA_QSPI_BASE + 0x0, 7484, 1871, -16.3347469f, 1, 0x8cda2ef2 },
-    { CaptureType::NamA2Lite, "Princeton Deluxe", "Princeton Deluxe - V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x1d3c, 7484, 1871, -16.0291502f, 1, 0xd362f12b },
-    { CaptureType::CabinetIr, "", "01_Black_1x12", CAPTURE_DATA_QSPI_BASE + 0x3a78, 16384, 4096, 0.0f, 0, 0xce85fdde },
+static const ModelEntry model_entries[MODEL_COUNT] = {
+    { ModelType::IrOnly, "Cab Only", "01_Black_1x12", 0, 0, 0, 0.0f, 0, CAPTURE_DATA_QSPI_BASE + 0x0, 16384, 4096, 0xce85fdde },
+    { ModelType::NamOnly, "Princeton Deluxe", "Princeton Deluxe - B V7 T6 B4", CAPTURE_DATA_QSPI_BASE + 0x4000, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
+    { ModelType::NamAndIr, "Princeton Deluxe", "Princeton Deluxe - V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x5d3c, 7484, 1871, -16.0291502f, 1, CAPTURE_DATA_QSPI_BASE + 0x7a78, 16384, 4096, 0x68d1d9ce },
 };

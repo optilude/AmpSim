@@ -63,7 +63,7 @@ CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 captures: tools/build_capture_blob.py
 	@echo "Rebuilding capture blob..."
 	@mkdir -p build
-	python3 tools/build_capture_blob.py Captures/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
+	python3 tools/build_capture_blob.py Models/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
 
 $(OBJECTS): captures
 

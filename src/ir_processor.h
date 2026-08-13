@@ -15,12 +15,12 @@ public:
         convolution_.Init(kMaxPartitions, irFreqBuf, fdlBuf);
     }
 
-    bool loadCapture(const CaptureEntry& capture) {
-        if (capture.type != CaptureType::CabinetIr || capture.item_count > kMaxIrSamples) {
+    bool loadModel(const ModelEntry& model) {
+        if ((model.type != ModelType::IrOnly && model.type != ModelType::NamAndIr) || model.ir_item_count > kMaxIrSamples) {
             return false;
         }
-        const float* ir = reinterpret_cast<const float*>(capture.qspi_address);
-        convolution_.Prepare(ir, capture.item_count);
+        const float* ir = reinterpret_cast<const float*>(model.ir_qspi_address);
+        convolution_.Prepare(ir, model.ir_item_count);
         loaded_ = true;
         return true;
     }

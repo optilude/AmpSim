@@ -2,7 +2,7 @@
 // NAM A2 processing with Dattorro plate reverb and full control scheme.
 //
 // Signal path (per audio block):
-//   in[0] -> [inputGain] -> [NAM] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
+//   in[0] -> [inputGain] -> [NAM] -> [IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
 //
 // The dry+wet mix is applied inside ReverbProcessor::process. When both
 // effects are off, the true-bypass relay handles the analog path and the
@@ -89,6 +89,7 @@ float currentTrebleKnob = 0.5f;
 // we ever configure (48 samples per SetAudioBlockSize in Init).
 static constexpr size_t kMaxBlock = 128;
 float scratchDry[kMaxBlock];
+float scratchMid[kMaxBlock];
 float scratchWet[kMaxBlock];
 static float g_ir_freq_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
 static float g_ir_fdl_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
@@ -175,25 +176,31 @@ void UpdateDisplay() {
     char line[32];
 
     const int shownIndex = isPreviewingModel ? previewModelIndex : currentSettings->modelIndex;
-    const bool haveModels = (CAPTURE_COUNT > 0) && shownIndex >= 0 && shownIndex < CAPTURE_COUNT;
+    const bool haveModels = (MODEL_COUNT > 0) && shownIndex >= 0 && shownIndex < MODEL_COUNT;
 
     // Line 0: model name (with preview arrow if browsing).
     hw.display.SetCursor(0, 0);
     if (haveModels) {
         snprintf(line, sizeof line, "%s%s",
                  isPreviewingModel ? "> " : "",
-                 capture_entries[shownIndex].model_name);
+                 model_entries[shownIndex].model_name);
     } else {
         snprintf(line, sizeof line, "No models");
     }
     hw.display.WriteString(line, Font_7x10, true);
 
-    // Line 1: variant.
+    // Line 1: variant and type.
     hw.display.SetCursor(0, 12);
     if (haveModels) {
-        snprintf(line, sizeof line, "%s", capture_entries[shownIndex].variant_name);
+        const char* typeStr = "";
+        switch (model_entries[shownIndex].type) {
+            case ModelType::NamOnly: typeStr = "[NAM]"; break;
+            case ModelType::IrOnly: typeStr = "[IR]"; break;
+            case ModelType::NamAndIr: typeStr = "[N+I]"; break;
+        }
+        snprintf(line, sizeof line, "%.15s %s", model_entries[shownIndex].variant_name, typeStr);
     } else {
-        snprintf(line, sizeof line, "(regenerate model_data.h)");
+        snprintf(line, sizeof line, "(regenerate models)");
     }
     hw.display.WriteString(line, Font_6x8, true);
 
@@ -225,7 +232,7 @@ void UpdateDisplay() {
     if (isPreviewingModel) {
         hw.display.WriteString("Click to load", Font_6x8, true);
     } else {
-        hw.display.WriteString("FS1:Rev FS2:NAM Enc:Mdl", Font_6x8, true);
+        hw.display.WriteString("FS1:Rev FS2:MDL Enc:Mdl", Font_6x8, true);
     }
 
     hw.display.Update();
@@ -247,7 +254,7 @@ static void ShowMessage(const char* line0, const char* line1 = nullptr) {
 // Model management
 // ---------------------------------------------------------------------------
 bool IsValidModelIndex(int index) {
-    return index >= 0 && index < CAPTURE_COUNT;
+    return index >= 0 && index < MODEL_COUNT;
 }
 
 // Load a model by index. Suppresses audio for the duration so we don't
@@ -260,24 +267,41 @@ void LoadModel(int index) {
         return;
     }
 
-    ShowMessage("Loading...", capture_entries[index].variant_name);
+    const ModelEntry& entry = model_entries[index];
+    char typeLine[32];
+    const char* typeStr = "";
+    switch (entry.type) {
+        case ModelType::NamOnly: typeStr = "[NAM]"; break;
+        case ModelType::IrOnly: typeStr = "[IR]"; break;
+        case ModelType::NamAndIr: typeStr = "[NAM+IR]"; break;
+    }
+    snprintf(typeLine, sizeof typeLine, "%s %s", entry.variant_name, typeStr);
+
+    ShowMessage("Loading...", typeLine);
 
     // Silence and stop the callback while NAM allocates and swaps model state.
     // This mirrors the intentional brief mute during model changes.
     audioSuppressed = true;
     if (audioStarted) hw.StopAudio();
-    const CaptureEntry& entry = capture_entries[index];
-    bool ok = false;
-    if (entry.type == CaptureType::NamA2Lite) {
-        ok = namProcessor.loadCapture(entry);
-    } else if (entry.type == CaptureType::CabinetIr) {
-        ok = irProcessor.loadCapture(entry);
+    bool ok = true;
+    
+    // Clear out previous state regardless of what we're loading
+    namProcessor.reset();
+    irProcessor.clear();
+    
+    if (entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr) {
+        ok &= namProcessor.loadModel(entry);
     }
+    
+    if (entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) {
+        ok &= irProcessor.loadModel(entry);
+    }
+    
     if (audioStarted) hw.StartAudio(AudioCallback);
     audioSuppressed = false;
 
     if (!ok) {
-        ShowMessage("Load failed", capture_entries[index].variant_name);
+        ShowMessage("Load failed", entry.variant_name);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
         // Keep the old model index and the previous loaded model.
         return;
@@ -322,16 +346,24 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     // 1) Input gain (per-sample tick keeps smoothing rate = sample rate).
     for (size_t i = 0; i < size; ++i) scratchDry[i] = in[0][i] * inputGain.Tick();
 
-    // 2) Selected model engine: NAM A2 Lite or cabinet IR.
+    // 2) Selected model engine: NAM A2 Lite and/or cabinet IR.
     if (currentSettings->namEnabled && IsValidModelIndex(currentSettings->modelIndex)) {
-        const CaptureEntry& entry = capture_entries[currentSettings->modelIndex];
-        if (entry.type == CaptureType::NamA2Lite && namProcessor.isModelLoaded()) {
-            namProcessor.process(scratchDry, scratchWet, size);
-        } else if (entry.type == CaptureType::CabinetIr && irProcessor.isLoaded()) {
-            irProcessor.processBlock(scratchDry, scratchWet, size);
+        const ModelEntry& entry = model_entries[currentSettings->modelIndex];
+        
+        // Pass 1: NAM
+        if ((entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr) && namProcessor.isModelLoaded()) {
+            namProcessor.process(scratchDry, scratchMid, size);
         } else {
-            for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
+            for (size_t i = 0; i < size; ++i) scratchMid[i] = scratchDry[i];
         }
+        
+        // Pass 2: IR
+        if ((entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) && irProcessor.isLoaded()) {
+            irProcessor.processBlock(scratchMid, scratchWet, size);
+        } else {
+            for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchMid[i];
+        }
+        
         // 3) Tone stack (only when model engine is on — pass-through otherwise).
         eq.ProcessBlock(scratchWet, scratchWet, size);
     } else {
@@ -369,14 +401,14 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 // Controls
 // ---------------------------------------------------------------------------
 void HandleEncoderMovement() {
-    if (CAPTURE_COUNT == 0) return;
+    if (MODEL_COUNT == 0) return;
 
     const int32_t inc = hw.encoders[0].Increment();
     if (inc == 0) return;
 
     int newIndex = previewModelIndex + inc;
-    if (newIndex < 0) newIndex = CAPTURE_COUNT - 1;
-    if (newIndex >= CAPTURE_COUNT) newIndex = 0;
+    if (newIndex < 0) newIndex = MODEL_COUNT - 1;
+    if (newIndex >= MODEL_COUNT) newIndex = 0;
 
     previewModelIndex = newIndex;
     isPreviewingModel = true;
@@ -503,7 +535,7 @@ int main(void) {
 
     // Settings — must be initialized before anything reads currentSettings.
     settings.Init(hw.seed.qspi, SETTINGS_QSPI_OFFSET);
-    settings.ValidateSettings(CAPTURE_COUNT);
+    settings.ValidateSettings(MODEL_COUNT);
     currentSettings = &settings.GetSettings();
 
     ShowMessage("Initializing", "AmpSim");
@@ -530,8 +562,8 @@ int main(void) {
     namProcessor.setSampleRate(hw.AudioSampleRate());
     namProcessor.setLoudnessTarget(-18.0f);
 
-    if (CAPTURE_COUNT == 0) {
-        ShowMessage("No models!", "Use nam_to_header.py");
+    if (MODEL_COUNT == 0) {
+        ShowMessage("No models!", "Use build_capture_blob.py");
     } else {
         previewModelIndex = IsValidModelIndex(currentSettings->modelIndex)
                                 ? currentSettings->modelIndex

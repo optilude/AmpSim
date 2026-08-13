@@ -22,7 +22,7 @@ weights. Up to 128 captures are supported.
 
 ```bash
 # Convert NAM captures to QSPI blob + metadata header
-python3 tools/build_capture_blob.py Captures/
+python3 tools/build_capture_blob.py Models/
 
 # Then build
 make

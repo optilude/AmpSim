@@ -41,7 +41,7 @@ DAISYSP_DIR = DaisySP
 APP_TYPE = BOOT_SRAM
 
 # Use the 2000ms grace period bootloader
-BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_3-intdfu-2000ms.bin
+BOOT_BIN = $(SYSTEM_FILES_DIR)/dsy_bootloader_v6_4-intdfu-2000ms.bin
 
 # Core location, and generic Makefile
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core

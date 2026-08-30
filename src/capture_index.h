@@ -22,12 +22,38 @@ struct ModelEntry {
 };
 
 static constexpr int MAX_MODEL_COUNT = 128;
-static constexpr int MODEL_COUNT = 3;
+static constexpr int MODEL_COUNT = 29;
 static constexpr uintptr_t CAPTURE_DATA_QSPI_BASE = 0x900c1000;
 static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x000c0000;
 
 static const ModelEntry model_entries[MODEL_COUNT] = {
-    { ModelType::IrOnly, "Cab Only", "01_Black_1x12", 0, 0, 0, 0.0f, 0, CAPTURE_DATA_QSPI_BASE + 0x0, 16384, 4096, 0xce85fdde },
-    { ModelType::NamOnly, "Princeton Deluxe", "Princeton Deluxe - B V7 T6 B4", CAPTURE_DATA_QSPI_BASE + 0x4000, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
-    { ModelType::NamAndIr, "Princeton Deluxe", "Princeton Deluxe - V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x5d3c, 7484, 1871, -16.0291502f, 1, CAPTURE_DATA_QSPI_BASE + 0x7a78, 16384, 4096, 0x68d1d9ce },
+    { ModelType::IrOnly, "Cabs", "Deluxe 1x12", 0, 0, 0, 0.0f, 0, CAPTURE_DATA_QSPI_BASE + 0x0, 16384, 4096, 0xb1e5e7f6 },
+    { ModelType::IrOnly, "Cabs", "MR82 4x12", 0, 0, 0, 0.0f, 0, CAPTURE_DATA_QSPI_BASE + 0x4000, 16384, 4096, 0xe1b26a0f },
+    { ModelType::NamOnly, "Friedman Buxom", "Clean 2", CAPTURE_DATA_QSPI_BASE + 0x8000, 7484, 1871, -17.3057537f, 1, 0, 0, 0, 0x76a43e6f },
+    { ModelType::NamOnly, "Friedman Buxom", "Clean 2 - Bright", CAPTURE_DATA_QSPI_BASE + 0x9d3c, 7484, 1871, -21.7719307f, 1, 0, 0, 0, 0x9d0f7d46 },
+    { ModelType::NamOnly, "Friedman Buxom", "Edge 1", CAPTURE_DATA_QSPI_BASE + 0xba78, 7484, 1871, -15.8495235f, 1, 0, 0, 0, 0xe7fdc255 },
+    { ModelType::NamOnly, "Friedman Buxom", "Edge 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0xd7b4, 7484, 1871, -19.461462f, 1, 0, 0, 0, 0x5582847b },
+    { ModelType::NamOnly, "Friedman Buxom", "Edge 2", CAPTURE_DATA_QSPI_BASE + 0xf4f0, 7484, 1871, -14.3187084f, 1, 0, 0, 0, 0x5ba2a029 },
+    { ModelType::NamOnly, "Friedman Buxom", "Edge 2 - Bright", CAPTURE_DATA_QSPI_BASE + 0x1122c, 7484, 1871, -19.2648239f, 1, 0, 0, 0, 0x6c998e94 },
+    { ModelType::NamOnly, "Friedman Buxom", "High Gain 1", CAPTURE_DATA_QSPI_BASE + 0x12f68, 7484, 1871, -15.6219826f, 1, 0, 0, 0, 0xee628c5b },
+    { ModelType::NamOnly, "Friedman Buxom", "High Gain 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0x14ca4, 7484, 1871, -18.622839f, 1, 0, 0, 0, 0xa8781221 },
+    { ModelType::NamOnly, "Friedman Buxom", "High Gain 2", CAPTURE_DATA_QSPI_BASE + 0x169e0, 7484, 1871, -16.9160709f, 1, 0, 0, 0, 0x53c58e22 },
+    { ModelType::NamOnly, "Friedman Buxom", "High Gain 2 - Bright", CAPTURE_DATA_QSPI_BASE + 0x1871c, 7484, 1871, -18.9818249f, 1, 0, 0, 0, 0x1ff2e563 },
+    { ModelType::NamOnly, "Friedman Buxom", "Low Gain 1", CAPTURE_DATA_QSPI_BASE + 0x1a458, 7484, 1871, -14.4593439f, 1, 0, 0, 0, 0xe5d44b98 },
+    { ModelType::NamOnly, "Friedman Buxom", "Low Gain 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0x1c194, 7484, 1871, -18.2043629f, 1, 0, 0, 0, 0x5b8af57c },
+    { ModelType::NamOnly, "Friedman Buxom", "Max gain", CAPTURE_DATA_QSPI_BASE + 0x1ded0, 7484, 1871, -16.9303093f, 1, 0, 0, 0, 0x768fdb6b },
+    { ModelType::NamOnly, "Friedman Buxom", "Max gain - Bright", CAPTURE_DATA_QSPI_BASE + 0x1fc0c, 7484, 1871, -16.0337467f, 1, 0, 0, 0, 0x4a46a064 },
+    { ModelType::NamOnly, "Friedman Buxom", "Med Gain 1", CAPTURE_DATA_QSPI_BASE + 0x21948, 7484, 1871, -16.468689f, 1, 0, 0, 0, 0xf95cbbdb },
+    { ModelType::NamOnly, "Friedman Buxom", "Med Gain 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0x23684, 7484, 1871, -19.4536572f, 1, 0, 0, 0, 0x4ec3e7a1 },
+    { ModelType::NamOnly, "Friedman Buxom", "Med Gain 2", CAPTURE_DATA_QSPI_BASE + 0x253c0, 7484, 1871, -16.6509514f, 1, 0, 0, 0, 0xb3bfd6ee },
+    { ModelType::NamOnly, "Friedman Buxom", "Med Gain 2 - Bright", CAPTURE_DATA_QSPI_BASE + 0x270fc, 7484, 1871, -16.8314857f, 1, 0, 0, 0, 0xd8599dce },
+    { ModelType::NamOnly, "Friedman Buxom", "UltraClean 1", CAPTURE_DATA_QSPI_BASE + 0x28e38, 7484, 1871, -20.7707825f, 1, 0, 0, 0, 0x93dd0681 },
+    { ModelType::NamOnly, "Friedman Buxom", "UltraClean 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0x2ab74, 7484, 1871, -22.8053379f, 1, 0, 0, 0, 0xb5781ef9 },
+    { ModelType::NamAndIr, "Marshall 1987x", "Jumped lower right", CAPTURE_DATA_QSPI_BASE + 0x2c8b0, 7484, 1871, -18.3815112f, 1, CAPTURE_DATA_QSPI_BASE + 0x2e5ec, 16384, 4096, 0xac862426 },
+    { ModelType::NamAndIr, "Marshall 1987x", "Jumpered upper left", CAPTURE_DATA_QSPI_BASE + 0x325ec, 7484, 1871, -19.2674953f, 1, CAPTURE_DATA_QSPI_BASE + 0x34328, 16384, 4096, 0x715c1603 },
+    { ModelType::NamOnly, "Martin JTM50", "Broadside boost", CAPTURE_DATA_QSPI_BASE + 0x38328, 7484, 1871, -9.6730489f, 1, 0, 0, 0, 0xe6c1704e },
+    { ModelType::NamOnly, "Matchless Brave", "Match Brave Hi", CAPTURE_DATA_QSPI_BASE + 0x3a064, 7484, 1871, -16.9213535f, 1, 0, 0, 0, 0x7cc0ec08 },
+    { ModelType::NamOnly, "Matchless Brave", "Match Brave Lo", CAPTURE_DATA_QSPI_BASE + 0x3bda0, 7484, 1871, -19.3857207f, 1, 0, 0, 0, 0x1feb9dc3 },
+    { ModelType::NamOnly, "Princeton Deluxe", "V07 T6 B4 Bright", CAPTURE_DATA_QSPI_BASE + 0x3dadc, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
+    { ModelType::NamOnly, "Princeton Deluxe", "V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x3f818, 7484, 1871, -16.0291502f, 1, 0, 0, 0, 0xd362f12b },
 };

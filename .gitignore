@@ -17,6 +17,13 @@ test_settings
 test_eq
 test_ir
 
+# Keep only the curated capture directories under version control.
+/Models/*
+!/Models/Princeton Deluxe/
+!/Models/Princeton Deluxe/**
+!/Models/Martin JTM50/
+!/Models/Martin JTM50/**
+
 # Spurious files from Daisy Makefile bug (see Makefile line 51-54)
 -fasm
 -fexceptions

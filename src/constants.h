@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // Knob dead band (prevents jitter)
 constexpr float KNOB_DEADBAND = 0.01f;
 
@@ -16,6 +18,14 @@ constexpr uint32_t ERROR_DISPLAY_TIME_MS = 5000;  // 5 seconds
 // Knob ranges
 constexpr float GAIN_RANGE_DB = 20.0f;   // ±20dB for input/output
 constexpr float EQ_RANGE_DB = 12.0f;     // ±12dB for EQ bands
+
+// Blocks the reverb keeps running after being switched off (~3 s at 48 kHz
+// with a 128 sample block) so the tail decays instead of being cut dead.
+constexpr int32_t REVERB_TAIL_BLOCKS = 1125;
+
+// Smoothed audio-callback load above which the model engine is shed. Beyond
+// this the callback starves the main loop and the pedal stops responding.
+constexpr float CPU_OVERLOAD_THRESHOLD = 0.95f;
 
 // EQ frequencies (Hz)
 constexpr float BASS_FREQ = 100.0f;

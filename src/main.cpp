@@ -21,6 +21,7 @@
 #include "guitar_eq.h"
 #include "constants.h"
 #include "helpers.h"
+#include "util/CpuLoadMeter.h"
 
 #include <string.h>
 #include <cstdio>
@@ -70,6 +71,20 @@ bool audioStarted = false;
 
 // True-bypass relay state tracking.
 bool currentBypassState = false;
+
+// Audio callback timing. The full chain (NAM + IR + EQ + reverb) is close to
+// the per-block budget, so the load is measured and surfaced on the display.
+daisy::CpuLoadMeter loadMeter;
+
+// Safety valve: if the callback consistently cannot finish inside its block
+// period the main loop is starved and the pedal appears frozen. Disable the
+// model engine from the audio thread instead so control is never lost.
+volatile bool cpuOverloadTripped = false;
+
+// Blocks left to keep running the reverb after it is switched off, so the
+// tail rings out instead of being cut dead. Unbounded trails would mean
+// paying for the reverb forever whenever the model engine is on.
+volatile int32_t reverbTailBlocks = 0;
 
 // Audio-callback-visible suppression flag. Set while the analog mute is
 // engaged around a relay flip so the DSP outputs silence for the duration
@@ -212,9 +227,11 @@ void UpdateDisplay() {
     hw.display.WriteString(line, Font_6x8, true);
 
     // Line 3: I/O gain (compact so it fits: max "In:-20 Out:+20" = 14 chars).
+    // Read from the knobs, not the gain stages: those only advance on the
+    // audio thread, which is skipped entirely in true bypass.
     hw.display.SetCursor(0, 32);
-    const int inDb = (int)std::lround(inputGain.GetGainDb());
-    const int outDb = (int)std::lround(outputVolume.GetGainDb());
+    const int inDb = (int)std::lround(KnobToNormalized(currentInputGainKnob) * GAIN_RANGE_DB);
+    const int outDb = (int)std::lround(KnobToNormalized(currentOutputVolumeKnob) * GAIN_RANGE_DB);
     snprintf(line, sizeof line, "In:%+3d Out:%+3d dB", inDb, outDb);
     hw.display.WriteString(line, Font_6x8, true);
 
@@ -231,8 +248,13 @@ void UpdateDisplay() {
     hw.display.SetCursor(0, 52);
     if (isPreviewingModel) {
         hw.display.WriteString("Click to load", Font_6x8, true);
+    } else if (cpuOverloadTripped) {
+        hw.display.WriteString("CPU OVERLOAD: MDL off", Font_6x8, true);
     } else {
-        hw.display.WriteString("FS1:Rev FS2:MDL Enc:Mdl", Font_6x8, true);
+        const float load = loadMeter.GetAvgCpuLoad();
+        const int cpuPct = std::isfinite(load) ? (int)std::lround(load * 100.0f) : 0;
+        snprintf(line, sizeof line, "CPU%3d%% FS1:M FS2:R", cpuPct);
+        hw.display.WriteString(line, Font_6x8, true);
     }
 
     hw.display.Update();
@@ -319,12 +341,15 @@ void LoadModel(int index) {
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
                    size_t size) {
+    loadMeter.OnBlockStart();
+
     // Clamp to our scratch capacity as a safety measure.
     if (size > kMaxBlock) size = kMaxBlock;
 
     // Fast-path silence when audio is suppressed (mute window / model load).
     if (audioSuppressed) {
         for (size_t i = 0; i < size; ++i) { out[0][i] = 0.0f; out[1][i] = 0.0f; }
+        loadMeter.OnBlockEnd();
         return;
     }
 
@@ -337,6 +362,7 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             out[0][i] = x;
             out[1][i] = x;
         }
+        loadMeter.OnBlockEnd();
         return;
     }
 
@@ -373,10 +399,11 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 
     // 4) Reverb + output volume + stereo. When reverb is off we still write
     //    to both output channels for consistent monitoring.
-    //    With reverb trails enabled, we always process the reverb if it was active
-    //    or if we need it to decay. Since True Bypass routes around the DSP entirely,
-    //    trails only work if the Model engine is ON (which keeps DSP active).
-    if (currentSettings->reverbEnabled || (!currentSettings->reverbEnabled && currentSettings->namEnabled)) {
+    //    After the reverb is switched off it keeps running for a bounded
+    //    number of blocks so the tail decays naturally. True bypass routes
+    //    around the DSP entirely, so trails only apply while the model
+    //    engine keeps the DSP path alive.
+    if (currentSettings->reverbEnabled || reverbTailBlocks > 0) {
         for (size_t i = 0; i < size; ++i) {
             float l, r;
             // If reverb is disabled, we feed silence (0.0f) to the reverb input to let it decay,
@@ -387,6 +414,7 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             out[0][i] = l * g;
             out[1][i] = r * g;
         }
+        if (!currentSettings->reverbEnabled) --reverbTailBlocks;
     } else {
         for (size_t i = 0; i < size; ++i) {
             const float g = outputVolume.Tick();
@@ -394,6 +422,17 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             out[0][i] = y;
             out[1][i] = y;
         }
+    }
+
+    loadMeter.OnBlockEnd();
+
+    // If the chain no longer fits in a block period the main loop stops
+    // running and the pedal looks dead. Shed the most expensive stage from
+    // here (the only context still scheduled) so the UI stays alive.
+    if (!cpuOverloadTripped && currentSettings->namEnabled
+        && loadMeter.GetAvgCpuLoad() > CPU_OVERLOAD_THRESHOLD) {
+        cpuOverloadTripped = true;
+        currentSettings->namEnabled = 0;
     }
 }
 
@@ -440,23 +479,36 @@ void CheckPreviewTimeout() {
 }
 
 void HandleFootswitches() {
-    // FS1 (Left): Reverb on/off
+    // switches[0] (FS2 on the enclosure): Reverb on/off
     if (hw.switches[0].RisingEdge()) {
         currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
-        // Reverb trails: do not clear the processor here so the tail can ring out.
+        if (currentSettings->reverbEnabled) {
+            reverbTailBlocks = 0;
+        } else {
+            // Let the tail ring out, then stop paying for the reverb.
+            reverbTailBlocks = REVERB_TAIL_BLOCKS;
+        }
         hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
         UpdateBypassRelay();
         SaveSettingsDebounced();
     }
 
-    // FS2 (Right): NAM on/off
+    // switches[1] (FS1 on the enclosure): model engine on/off
     if (hw.switches[1].RisingEdge()) {
-        currentSettings->namEnabled = !currentSettings->namEnabled;
-        if (currentSettings->namEnabled) {
-            // Reset the DSP engine states when turning on to prevent a pop from old history
+        const bool enabling = !currentSettings->namEnabled;
+        if (enabling) {
+            // reset()/clear() rewind state the audio callback is actively
+            // reading, so silence the DSP for the duration.
+            audioSuppressed = true;
             namProcessor.reset();
             irProcessor.clear();
+            cpuOverloadTripped = false;
+            loadMeter.Reset();
+            currentSettings->namEnabled = 1;
+            audioSuppressed = false;
+        } else {
+            currentSettings->namEnabled = 0;
         }
         hw.SetLed(1, currentSettings->namEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
@@ -545,6 +597,7 @@ int main(void) {
     outputVolume.Init(hw.AudioSampleRate());
     eq.Init(hw.AudioSampleRate());
     irProcessor.init(g_ir_freq_buf, g_ir_fdl_buf);
+    loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
 
     // Reverb (allocates from SDRAM arena).
     InitReverbOrHalt();
@@ -597,6 +650,18 @@ int main(void) {
 
         HandleFootswitches();
         HandleKnobs();
+
+        // The audio thread sheds the model engine if the callback stops
+        // fitting in its block period; mirror that onto the LED and relay.
+        static bool overloadHandled = false;
+        if (cpuOverloadTripped && !overloadHandled) {
+            overloadHandled = true;
+            hw.SetLed(1, 0.0f);
+            hw.UpdateLeds();
+            UpdateBypassRelay();
+        } else if (!cpuOverloadTripped) {
+            overloadHandled = false;
+        }
 
         CheckSettingsSave();
 

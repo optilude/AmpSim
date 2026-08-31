@@ -62,7 +62,7 @@ The bottom three knobs are a three-band EQ: Bass, Middle, Treble. At noon, the E
 
 **Bypass**
 
-By default, the pedal operates with true stereo bypass. You can enable buffered bypass or buffered mono-to-stere (dual mono) in the settings menu.
+By default, the pedal operates with true stereo bypass. You can enable buffered bypass or buffered mono-to-stereo (dual mono) in the settings menu.
 
 ## Signal Chain
 
@@ -154,7 +154,7 @@ make program-dfu
 make program
 ```
 
-Once the firmware has been flashed, you can use the Settings menu (long-press the rotary encoder) and click Reset instead of using the rest button on the Daisy Seed. This makes it easier to flash new firmware without taking the lid off the back of the pedal.
+Once the firmware has been flashed, you can use the Settings menu (long-press the rotary encoder) and click Reset instead of using the reset button on the Daisy Seed. This makes it easier to flash new firmware without taking the lid off the back of the pedal.
 
 ## Adding New Models
 

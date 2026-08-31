@@ -50,16 +50,46 @@ inline constexpr int kDilations[kNumLayers] = {
     1, 3, 7, 17, 41, 101, 239, 1, 3, 7, 17, 41, 101, 239, 1, 13, 1, 3, 7, 17, 41, 101, 239
 };
 
-inline constexpr int kLayerCols[kNumLayers] = {
-    7, 17, 37, 87, 207, 507, 1197, 7, 17, 37, 87, 207, 507, 1197,
-    16, 184, 7, 17, 37, 87, 207, 507, 1197
+// How many samples process_layer handles at once. The dilated convolution is
+// 9 multiply-accumulates per tap against 9 weights; done one sample at a time
+// that is 12 loads (9 weights + 3 history) to feed 9 FMAs, so the loop is
+// load-bound rather than FPU-bound. Handling a group of samples per tap loads
+// the 9 weights once for the whole group: at 4, 21 loads feed 36 FMAs.
+//
+// 4 is the sweet spot on Cortex-M7's 32 single-precision registers: 12
+// accumulators plus 9 weights plus 3 history values is 24, which stays in
+// registers. 8 would want 33 and spill. Must divide kBlockSize.
+static constexpr int kSampleGroup = 4;
+static_assert(kBlockSize % kSampleGroup == 0, "group must tile the block");
+
+// Per-layer history ring geometry, derived rather than tabulated so the
+// +kSampleGroup below cannot drift out of sync with the loop that needs it.
+//
+// A layer's convolution reaches back (kernelSize-1)*dilation samples, so that
+// many columns plus the current one are live; +1 more is the classic ring
+// slack. The grouped loop then writes a whole group of new input samples
+// before reading any taps, so the oldest tap of the group's first sample must
+// survive kSampleGroup writes -- hence the extra headroom. Without it, layer 0
+// (7 columns, reach 5) would overwrite its own history mid-group.
+struct HistoryLayout {
+    int cols[kNumLayers];
+    int offset[kNumLayers];
+    int total;
 };
 
-inline constexpr int kLayerHistoryOffset[kNumLayers] = {
-    0, 21, 72, 183, 444, 1065, 2586, 6177, 6198, 6249,
-    6360, 6621, 7242, 8763, 12354, 12402, 12954, 12975, 13026, 13137,
-    13398, 14019, 15540
-};
+inline constexpr HistoryLayout MakeHistoryLayout() {
+    HistoryLayout h{};
+    int off = 0;
+    for (int i = 0; i < kNumLayers; ++i) {
+        h.cols[i] = (kKernelSizes[i] - 1) * kDilations[i] + 2 + kSampleGroup;
+        h.offset[i] = off;
+        off += h.cols[i] * kChannels;
+    }
+    h.total = off;
+    return h;
+}
+
+inline constexpr HistoryLayout kHistory = MakeHistoryLayout();
 
 inline constexpr int kLayerConvOffset[kNumLayers] = {
     0, 54, 108, 162, 216, 270, 324, 378, 432, 486, 540, 594,
@@ -74,7 +104,7 @@ inline constexpr int kLayerL1Offset[kNumLayers] = {
 static constexpr int kKernelSum = 156;
 static constexpr int kConvWeightCount = kKernelSum * kChannels * kChannels;
 static constexpr int kLayer1x1WeightCount = kNumLayers * kChannels * kChannels;
-static constexpr int kHistoryFloats = 19131;
+static constexpr int kHistoryFloats = kHistory.total;
 
 struct LayerRuntime {
     NAM_A2_ALIGN32 float convB[3];
@@ -170,7 +200,7 @@ inline void reset_state(State& st, HotState& hot) {
     std::fill(hot.bufA, hot.bufA + kBlockSize * 3, 0.0f);
     std::fill(hot.bufB, hot.bufB + kBlockSize * 3, 0.0f);
     std::fill(hot.headSum, hot.headSum + kBlockSize * 3, 0.0f);
-    for (int i = 0; i < kNumLayers; ++i) st.layerWritePos[i] = kLayerCols[i] - 1;
+    for (int i = 0; i < kNumLayers; ++i) st.layerWritePos[i] = kHistory.cols[i] - 1;
     hot.headWritePos = kHeadKernel - 1;
 }
 
@@ -180,61 +210,114 @@ inline constexpr int prewarm_samples() {
     return total;
 }
 
-inline void acc_tap3(const float* w, const float* s, float& z0, float& z1, float& z2) {
-    const float s0 = s[0];
-    const float s1 = s[1];
-    const float s2 = s[2];
-    z0 += s0 * w[0] + s1 * w[3] + s2 * w[6];
-    z1 += s0 * w[1] + s1 * w[4] + s2 * w[7];
-    z2 += s0 * w[2] + s1 * w[5] + s2 * w[8];
+// One dilated-convolution layer, kSampleGroup samples at a time.
+//
+// The loop nest is (group, tap, sample-within-group) rather than the obvious
+// (sample, tap). Two things fall out of that:
+//
+//   - the tap's 9 weights are loaded once per group instead of once per
+//     sample, which is what takes the loop from load-bound towards FPU-bound;
+//   - within a tap the history column advances by one per sample, so the reads
+//     are consecutive. Sample-major order instead strides by dilation*3 floats
+//     -- for the dilation-239 layers that is a fresh cache line on every
+//     single tap.
+//
+// Taps are still accumulated in ascending k for each sample, so the result is
+// bit-identical to the sample-major version, not merely close. tools/nam_bench
+// checks exactly that.
+//
+// `templatedPrecombine` is the li == 0 special case, passed as a template
+// argument so the test leaves the inner loops entirely.
+template <bool kPrecombine>
+inline void process_layer_impl(State& st, HotState& hot, const SharedWeights& sw,
+                               int li, const float* cond, const float* in, float* out) {
+    const LayerRuntime& L = sw.layer[li];
+    int wp = st.layerWritePos[li];
+    const int cols = kHistory.cols[li];
+    const int dilation = kDilations[li];
+    const int kernelSize = kKernelSizes[li];
+    float* const hist = st.history + kHistory.offset[li];
+    const float* const wAll = sw.convW + kLayerConvOffset[li];
+    const float* const lx = sw.l1x1W + kLayerL1Offset[li];
+
+    // The per-sample conditioning gain: layer 0 folds the rechannel stage and
+    // its own last tap into one coefficient, so it also skips that tap below.
+    const float* const mix = kPrecombine ? L.preCurrent : L.mixinW;
+    const int taps = kPrecombine ? kernelSize - 1 : kernelSize;
+
+    for (int n0 = 0; n0 < kBlockSize; n0 += kSampleGroup) {
+        // 1. Publish this group's inputs into the ring before any tap reads,
+        //    because the newest taps read them back. Safe only because the
+        //    ring carries kSampleGroup columns of headroom; see kHistory.
+        for (int j = 0; j < kSampleGroup; ++j) {
+            const float* src = in + (n0 + j) * 3;
+            int col = wp + j;
+            if (col >= cols) col -= cols;
+            float* histCol = hist + col * 3;
+            histCol[0] = src[0]; histCol[1] = src[1]; histCol[2] = src[2];
+        }
+
+        // 2. Seed the accumulators. Small enough to stay in registers once the
+        //    constant-bound loops are unrolled.
+        float z[kSampleGroup][3];
+        for (int j = 0; j < kSampleGroup; ++j) {
+            const float c = cond[n0 + j];
+            z[j][0] = L.convB[0] + mix[0] * c;
+            z[j][1] = L.convB[1] + mix[1] * c;
+            z[j][2] = L.convB[2] + mix[2] * c;
+        }
+
+        // 3. Taps outer, samples inner: 9 weight loads per tap per group.
+        for (int k = 0; k < taps; ++k) {
+            const float* const w = wAll + k * 9;
+            const float w0 = w[0], w1 = w[1], w2 = w[2];
+            const float w3 = w[3], w4 = w[4], w5 = w[5];
+            const float w6 = w[6], w7 = w[7], w8 = w[8];
+
+            // The reach is at most cols - 2, and wp is in [0, cols), so one
+            // correction is always enough -- no loop needed.
+            int col = wp - (kernelSize - 1 - k) * dilation;
+            if (col < 0) col += cols;
+
+            for (int j = 0; j < kSampleGroup; ++j) {
+                const float* s = hist + col * 3;
+                const float s0 = s[0], s1 = s[1], s2 = s[2];
+                z[j][0] += s0 * w0 + s1 * w3 + s2 * w6;
+                z[j][1] += s0 * w1 + s1 * w4 + s2 * w7;
+                z[j][2] += s0 * w2 + s1 * w5 + s2 * w8;
+                if (++col >= cols) col = 0;
+            }
+        }
+
+        // 4. Activation, head accumulation and the 1x1 mix-out.
+        for (int j = 0; j < kSampleGroup; ++j) {
+            const int n = n0 + j;
+            const float a0 = leaky(z[j][0]);
+            const float a1 = leaky(z[j][1]);
+            const float a2 = leaky(z[j][2]);
+            float* hs = hot.headSum + n * 3;
+            hs[0] += a0; hs[1] += a1; hs[2] += a2;
+
+            const float* src = in + n * 3;
+            float* dst = out + n * 3;
+            dst[0] = src[0] + L.l1x1B[0] + a0 * lx[0] + a1 * lx[3] + a2 * lx[6];
+            dst[1] = src[1] + L.l1x1B[1] + a0 * lx[1] + a1 * lx[4] + a2 * lx[7];
+            dst[2] = src[2] + L.l1x1B[2] + a0 * lx[2] + a1 * lx[5] + a2 * lx[8];
+        }
+
+        wp += kSampleGroup;
+        if (wp >= cols) wp -= cols;
+    }
+    st.layerWritePos[li] = wp;
 }
 
 inline void process_layer(State& st, HotState& hot, const SharedWeights& sw,
                           int li, const float* cond, const float* in, float* out) {
-    const LayerRuntime& L = sw.layer[li];
-    int wp = st.layerWritePos[li];
-    const int cols = kLayerCols[li];
-    const int dilation = kDilations[li];
-    const int kernelSize = kKernelSizes[li];
-    float* const hist = st.history + kLayerHistoryOffset[li];
-    const float* const wAll = sw.convW + kLayerConvOffset[li];
-    const float* const lx = sw.l1x1W + kLayerL1Offset[li];
-    const bool precombineCurrent = (li == 0 && kernelSize == 6);
-
-    for (int n = 0; n < kBlockSize; ++n) {
-        const float* src = in + n * 3;
-        float* histCol = hist + wp * 3;
-        const float x0 = src[0];
-        const float x1 = src[1];
-        const float x2 = src[2];
-        histCol[0] = x0; histCol[1] = x1; histCol[2] = x2;
-
-        const float c = cond[n];
-        float z0 = L.convB[0] + (precombineCurrent ? L.preCurrent[0] : L.mixinW[0]) * c;
-        float z1 = L.convB[1] + (precombineCurrent ? L.preCurrent[1] : L.mixinW[1]) * c;
-        float z2 = L.convB[2] + (precombineCurrent ? L.preCurrent[2] : L.mixinW[2]) * c;
-
-        for (int k = 0; k < kernelSize; ++k) {
-            if (precombineCurrent && k == kernelSize - 1) continue;
-            int col = wp - (kernelSize - 1 - k) * dilation;
-            while (col < 0) col += cols;
-            acc_tap3(wAll + k * 9, hist + col * 3, z0, z1, z2);
-        }
-
-        const float a0 = leaky(z0);
-        const float a1 = leaky(z1);
-        const float a2 = leaky(z2);
-        float* hs = hot.headSum + n * 3;
-        hs[0] += a0; hs[1] += a1; hs[2] += a2;
-
-        float* dst = out + n * 3;
-        dst[0] = x0 + L.l1x1B[0] + a0 * lx[0] + a1 * lx[3] + a2 * lx[6];
-        dst[1] = x1 + L.l1x1B[1] + a0 * lx[1] + a1 * lx[4] + a2 * lx[7];
-        dst[2] = x2 + L.l1x1B[2] + a0 * lx[2] + a1 * lx[5] + a2 * lx[8];
-
-        if (++wp >= cols) wp = 0;
+    if (li == 0 && kKernelSizes[0] == 6) {
+        process_layer_impl<true>(st, hot, sw, li, cond, in, out);
+    } else {
+        process_layer_impl<false>(st, hot, sw, li, cond, in, out);
     }
-    st.layerWritePos[li] = wp;
 }
 
 inline void process_head(HotState& hot, const SharedWeights& sw, float* output) {

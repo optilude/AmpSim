@@ -11,7 +11,13 @@ constexpr float EQ_PROCESS_THRESHOLD = 0.05f;
 // Timing constants
 constexpr uint32_t PREVIEW_TIMEOUT_MS = 10000;
 constexpr uint32_t SAVE_DELAY_MS = 2000;
-constexpr uint32_t MUTE_DELAY_MS = 30;  // 30ms for better pop prevention
+// True-bypass relay sequencing, counted in samples from the audio callback
+// rather than slept through on the main loop. On an effect toggle the analog
+// mute engages immediately, the relay flips once the output is quiet, and the
+// mute releases after the contacts have settled. Same shape and timing as
+// bkshepherd's.
+constexpr float BYPASS_TOGGLE_TRANSITION_S = 0.010f;  // relay flips at 10 ms
+constexpr float MUTE_OFF_TRANSITION_S = 0.020f;       // unmute at 20 ms
 constexpr uint32_t DISPLAY_UPDATE_INTERVAL_MS = 33;  // ~30 FPS
 constexpr uint32_t ERROR_DISPLAY_TIME_MS = 5000;  // 5 seconds
 

@@ -69,10 +69,21 @@ uint32_t lastDisplayUpdate = 0;
 // keeping the dirty tracking localizes the future persistence hook.
 uint32_t lastSettingsChange = 0;
 bool settingsDirty = false;
-bool audioStarted = false;
 
-// True-bypass relay state tracking.
-bool currentBypassState = false;
+// True-bypass relay / analog mute. Driven entirely from the audio callback as
+// a sample counter: the main loop used to sleep 60 ms inside the toggle, which
+// froze the UI and the display every time a footswitch was pressed.
+bool currentBypassState = false;   // last effect-derived bypass decision
+bool relayBypassOn = false;        // what the relay pin is actually set to
+bool relayMuteOn = false;          // what the mute pin is actually set to
+int32_t samplesTilBypassToggle = 0;
+int32_t samplesTilMuteOff = 0;
+int32_t bypassToggleTransitionSamples = 0;
+int32_t muteOffTransitionSamples = 0;
+
+// Set by the audio callback when the encoder is clicked. Loading a model reads
+// QSPI and paints the display, so it has to happen on the main loop.
+volatile int pendingLoadIndex = -1;
 
 // Audio callback timing. The full chain (NAM + IR + EQ + reverb) is close to
 // the per-block budget, so the load is measured and surfaced on the display.
@@ -132,40 +143,6 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
                    size_t size);
 
-static void ApplyControlTargetsOnAudioThread() {
-    static float appliedInputGain = -1.0f;
-    static float appliedOutputVolume = -1.0f;
-    static float appliedReverbMix = -1.0f;
-    static float appliedBass = -1.0f;
-    static float appliedMid = -1.0f;
-    static float appliedTreble = -1.0f;
-
-    if (currentInputGainKnob != appliedInputGain) {
-        appliedInputGain = currentInputGainKnob;
-        inputGain.SetGain(KnobToNormalized(appliedInputGain));
-    }
-    if (currentOutputVolumeKnob != appliedOutputVolume) {
-        appliedOutputVolume = currentOutputVolumeKnob;
-        outputVolume.SetGain(KnobToNormalized(appliedOutputVolume));
-    }
-    if (currentReverbMixKnob != appliedReverbMix) {
-        appliedReverbMix = currentReverbMixKnob;
-        reverbProcessor.setMix(appliedReverbMix);
-    }
-    if (currentBassKnob != appliedBass) {
-        appliedBass = currentBassKnob;
-        eq.SetBass(KnobToNormalized(appliedBass));
-    }
-    if (currentMidKnob != appliedMid) {
-        appliedMid = currentMidKnob;
-        eq.SetMid(KnobToNormalized(appliedMid));
-    }
-    if (currentTrebleKnob != appliedTreble) {
-        appliedTreble = currentTrebleKnob;
-        eq.SetTreble(KnobToNormalized(appliedTreble));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -174,28 +151,33 @@ void SaveSettingsDebounced() {
     lastSettingsChange = daisy::System::GetNow();
 }
 
-// Manage the true-bypass relay. Both effects OFF => relay engaged (analog
-// pass-through). Otherwise DSP is active. Follows bkshepherd's pattern:
-// mute the analog output, wait, flip the relay, wait, unmute.
-void UpdateBypassRelay() {
+// Both effects OFF => relay engaged (analog pass-through), otherwise the DSP
+// is in circuit. Called once per audio block; when the decision changes it
+// arms the mute/relay sequence that RunBypassTimingForSample steps through.
+static inline void UpdateBypassRelay() {
     const bool shouldBypass = !currentSettings->namEnabled
                            && !currentSettings->reverbEnabled;
 
     if (shouldBypass == currentBypassState) return;
-
-    // Suppress DSP output before muting to guarantee silence at the DAC
-    // (the mute pin muffs the analog output but the DAC keeps producing).
-    audioSuppressed = true;
-    hw.SetAudioMute(true);
-    hw.DelayMs(MUTE_DELAY_MS);
-
-    hw.SetAudioBypass(shouldBypass);
-
-    hw.DelayMs(MUTE_DELAY_MS);
-    hw.SetAudioMute(false);
-    audioSuppressed = false;
-
     currentBypassState = shouldBypass;
+
+    // Mute immediately, flip the relay once the output is quiet, release the
+    // mute after the contacts have settled. No sleeping: the audio callback
+    // is now the only thing servicing the controls and the LEDs.
+    relayMuteOn = true;
+    samplesTilBypassToggle = bypassToggleTransitionSamples;
+    samplesTilMuteOff = muteOffTransitionSamples;
+}
+
+// Advance the mute/relay sequence by one block's worth of samples. The GPIOs
+// are written once per block, so counting per block rather than per sample
+// costs no accuracy and keeps it out of the inner loops.
+static inline void StepBypassTiming(int32_t samples) {
+    if (!relayMuteOn) return;
+    samplesTilBypassToggle -= samples;
+    samplesTilMuteOff -= samples;
+    if (samplesTilBypassToggle < 0) relayBypassOn = currentBypassState;
+    if (samplesTilMuteOff < 0) relayMuteOn = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,10 +314,11 @@ void LoadModel(int index) {
         return;
     }
 
-    // Silence and stop the callback while NAM allocates and swaps model state.
-    // This mirrors the intentional brief mute during model changes.
+    // Silence the DSP while the model state is swapped, but keep the callback
+    // running: it is what services the controls, the LEDs and the relay now,
+    // and StopAudio() here would freeze all of them. audioSuppressed makes the
+    // callback skip the DSP only.
     audioSuppressed = true;
-    if (audioStarted) hw.StopAudio();
     bool ok = true;
     
     // Clear out previous state regardless of what we're loading
@@ -350,7 +333,6 @@ void LoadModel(int index) {
         ok &= irProcessor.loadModel(entry);
     }
     
-    if (audioStarted) hw.StartAudio(AudioCallback);
     audioSuppressed = false;
 
     if (!ok) {
@@ -367,20 +349,116 @@ void LoadModel(int index) {
 }
 
 // ---------------------------------------------------------------------------
+// Controls
+//
+// Everything here runs on the audio thread, once per block. That is the only
+// fixed-rate context in the firmware: the main loop's period swings with the
+// display refresh and with QSPI reads, which is what made the switches miss
+// edges and the LEDs flicker. Same arrangement bkshepherd uses.
+//
+// The rules for this section: no display writes, no blocking, no QSPI. Work
+// that needs any of those sets a flag for the main loop instead.
+// ---------------------------------------------------------------------------
+void HandleEncoderMovement() {
+    if (MODEL_COUNT == 0) return;
+
+    const int32_t inc = hw.encoders[0].Increment();
+    if (inc == 0) return;
+
+    int newIndex = previewModelIndex + inc;
+    if (newIndex < 0) newIndex = MODEL_COUNT - 1;
+    if (newIndex >= MODEL_COUNT) newIndex = 0;
+
+    previewModelIndex = newIndex;
+    isPreviewingModel = true;
+    previewStartTime = daisy::System::GetNow();
+}
+
+void HandleEncoderClick() {
+    if (!hw.encoders[0].RisingEdge()) return;
+
+    if (isPreviewingModel) {
+        // Snapshot the target before we clear the flag so that if the
+        // timeout races with this callback we still load what the user saw.
+        // Loading reads QSPI and paints the display, so hand it to the main
+        // loop rather than doing it here.
+        pendingLoadIndex = previewModelIndex;
+        isPreviewingModel = false;
+    }
+}
+
+void HandleFootswitches() {
+    // switches[0] (FS2 on the enclosure): Reverb on/off
+    if (hw.switches[0].RisingEdge()) {
+        currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
+        if (currentSettings->reverbEnabled) {
+            reverbTailBlocks = 0;
+        } else {
+            // Let the tail ring out, then stop paying for the reverb.
+            reverbTailBlocks = reverbTailBlocksFull;
+        }
+        SaveSettingsDebounced();
+    }
+
+    // switches[1] (FS1 on the enclosure): model engine on/off
+    if (hw.switches[1].RisingEdge()) {
+        const bool enabling = !currentSettings->namEnabled;
+        if (enabling) {
+            if (dspFaultLatched) {
+                // Recovery dropped the IR spectrum, so a rewind is not enough:
+                // ask the main loop to reload the model from QSPI (which
+                // re-verifies its CRC).
+                dspFaultLatched = false;
+                pendingLoadIndex = currentSettings->modelIndex;
+            }
+            namProcessor.reset();
+            irProcessor.resetState();
+            eq.Reset();
+            cpuOverloadTripped = false;
+            loadMeter.Reset();
+            currentSettings->namEnabled = 1;
+        } else {
+            currentSettings->namEnabled = 0;
+        }
+        SaveSettingsDebounced();
+    }
+}
+
+// Deadbanded knob read. Returns true when the pot has moved far enough that
+// the parameter should be re-applied.
+static bool UpdateKnob(float knobRaw, float& stored) {
+    if (std::abs(knobRaw - stored) <= KNOB_DEADBAND) return false;
+    stored = knobRaw;
+    return true;
+}
+
+void HandleKnobs() {
+    if (UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob))
+        inputGain.SetGain(KnobToNormalized(currentInputGainKnob));
+    if (UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob))
+        outputVolume.SetGain(KnobToNormalized(currentOutputVolumeKnob));
+    if (UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob))
+        reverbProcessor.setMix(currentReverbMixKnob);
+    if (UpdateKnob(hw.knobs[3].Value(), currentBassKnob))
+        eq.SetBass(KnobToNormalized(currentBassKnob));
+    if (UpdateKnob(hw.knobs[4].Value(), currentMidKnob))
+        eq.SetMid(KnobToNormalized(currentMidKnob));
+    if (UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob))
+        eq.SetTreble(KnobToNormalized(currentTrebleKnob));
+}
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
-void AudioCallback(daisy::AudioHandle::InputBuffer in,
-                   daisy::AudioHandle::OutputBuffer out,
-                   size_t size) {
-    loadMeter.OnBlockStart();
-
-    // Clamp to our scratch capacity as a safety measure.
-    if (size > kMaxBlock) size = kMaxBlock;
-
+// The DSP chain proper. Split out of AudioCallback so the callback can always
+// run the control, relay and LED housekeeping around it, whichever of the DSP
+// early-outs is taken.
+static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
+                            daisy::AudioHandle::OutputBuffer out,
+                            size_t size) {
     // Fast-path silence when audio is suppressed (mute window / model load).
     if (audioSuppressed) {
         for (size_t i = 0; i < size; ++i) { out[0][i] = 0.0f; out[1][i] = 0.0f; }
-        loadMeter.OnBlockEnd();
         return;
     }
 
@@ -393,11 +471,12 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             out[0][i] = x;
             out[1][i] = x;
         }
-        loadMeter.OnBlockEnd();
+        // A pending tail can never ring out from here, and leaving the counter
+        // armed would make the next MDL-on run the reverb over silence for
+        // three seconds. Drop it.
+        reverbTailBlocks = 0;
         return;
     }
-
-    ApplyControlTargetsOnAudioThread();
 
     // -- DSP path --
     // 1) Input gain (per-sample tick keeps smoothing rate = sample rate).
@@ -462,6 +541,40 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             out[1][i] = y;
         }
     }
+}
+
+void AudioCallback(daisy::AudioHandle::InputBuffer in,
+                   daisy::AudioHandle::OutputBuffer out,
+                   size_t size) {
+    loadMeter.OnBlockStart();
+
+    // Clamp to our scratch capacity as a safety measure.
+    if (size > kMaxBlock) size = kMaxBlock;
+
+    // -- Controls in, before the DSP so a footswitch takes effect this block --
+    hw.ProcessAnalogControls();
+    hw.ProcessDigitalControls();
+    HandleKnobs();
+    HandleFootswitches();
+    HandleEncoderMovement();
+    HandleEncoderClick();
+
+    // -- True-bypass relay and analog mute --
+    // Re-evaluated every block rather than only on footswitch edges, so the
+    // relay also tracks the overload and DSP-fault paths that turn the model
+    // engine off from underneath the UI.
+    UpdateBypassRelay();
+    StepBypassTiming((int32_t)size);
+    hw.SetAudioBypass(relayBypassOn);
+    hw.SetAudioMute(relayMuteOn);
+
+    ProcessAudioDsp(in, out, size);
+
+    // -- LEDs out. Led::Update() advances the software-PWM sawtooth, so it has
+    // to be called at a steady rate or the LEDs simply do not light. --
+    hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
+    hw.SetLed(1, currentSettings->namEnabled ? 1.0f : 0.0f);
+    hw.UpdateLeds();
 
     loadMeter.OnBlockEnd();
 
@@ -476,35 +589,11 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 }
 
 // ---------------------------------------------------------------------------
-// Controls
+// Main-loop work
+//
+// Anything the audio thread deferred because it blocks, paints the display or
+// touches QSPI.
 // ---------------------------------------------------------------------------
-void HandleEncoderMovement() {
-    if (MODEL_COUNT == 0) return;
-
-    const int32_t inc = hw.encoders[0].Increment();
-    if (inc == 0) return;
-
-    int newIndex = previewModelIndex + inc;
-    if (newIndex < 0) newIndex = MODEL_COUNT - 1;
-    if (newIndex >= MODEL_COUNT) newIndex = 0;
-
-    previewModelIndex = newIndex;
-    isPreviewingModel = true;
-    previewStartTime = daisy::System::GetNow();
-}
-
-void HandleEncoderClick() {
-    if (!hw.encoders[0].RisingEdge()) return;
-
-    if (isPreviewingModel) {
-        // Snapshot the target before we clear the flag so that if the
-        // timeout races with this callback we still load what the user saw.
-        const int target = previewModelIndex;
-        isPreviewingModel = false;
-        LoadModel(target);
-    }
-}
-
 void CheckPreviewTimeout() {
     if (!isPreviewingModel) return;
 
@@ -517,74 +606,13 @@ void CheckPreviewTimeout() {
     }
 }
 
-void HandleFootswitches() {
-    // switches[0] (FS2 on the enclosure): Reverb on/off
-    if (hw.switches[0].RisingEdge()) {
-        currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
-        if (currentSettings->reverbEnabled) {
-            reverbTailBlocks = 0;
-        } else {
-            // Let the tail ring out, then stop paying for the reverb.
-            reverbTailBlocks = reverbTailBlocksFull;
-        }
-        hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
-        hw.UpdateLeds();
-        UpdateBypassRelay();
-        SaveSettingsDebounced();
-    }
-
-    // switches[1] (FS1 on the enclosure): model engine on/off
-    if (hw.switches[1].RisingEdge()) {
-        const bool enabling = !currentSettings->namEnabled;
-        if (enabling) {
-            if (dspFaultLatched) {
-                // Recovery dropped the IR spectrum, so a rewind is not enough:
-                // reload the model from QSPI (which re-verifies its CRC).
-                dspFaultLatched = false;
-                LoadModel(currentSettings->modelIndex);
-            }
-            // reset()/resetState() rewind state the audio callback is actively
-            // reading, so silence the DSP for the duration.
-            audioSuppressed = true;
-            namProcessor.reset();
-            irProcessor.resetState();
-            eq.Reset();
-            cpuOverloadTripped = false;
-            loadMeter.Reset();
-            currentSettings->namEnabled = 1;
-            audioSuppressed = false;
-        } else {
-            currentSettings->namEnabled = 0;
-        }
-        hw.SetLed(1, currentSettings->namEnabled ? 1.0f : 0.0f);
-        hw.UpdateLeds();
-        UpdateBypassRelay();
-        SaveSettingsDebounced();
-    }
-}
-
-// Deadbanded knob update helper. Returns true if a change was applied.
-template <typename Apply>
-static bool UpdateKnob(float knobRaw, float& stored, Apply apply) {
-    if (std::abs(knobRaw - stored) <= KNOB_DEADBAND) return false;
-    stored = knobRaw;
-    apply(knobRaw);
-    return true;
-}
-
-void HandleKnobs() {
-    UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob,
-               [](float) {});
-    UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob,
-               [](float) {});
-    UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob,
-               [](float) {});
-    UpdateKnob(hw.knobs[3].Value(), currentBassKnob,
-               [](float) {});
-    UpdateKnob(hw.knobs[4].Value(), currentMidKnob,
-               [](float) {});
-    UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob,
-               [](float) {});
+// The encoder click asked for a model swap. Loading paints the display and
+// reads QSPI, neither of which belongs on the audio thread.
+void HandlePendingLoad() {
+    const int target = pendingLoadIndex;
+    if (target < 0) return;
+    pendingLoadIndex = -1;
+    LoadModel(target);
 }
 
 // Recover from a non-finite sample reported by the audio thread. Everything
@@ -604,9 +632,6 @@ void HandleDspFault() {
     reverbProcessor.clear();
     loadMeter.Reset();
     audioSuppressed = false;
-
-    hw.SetLed(1, 0.0f);
-    UpdateBypassRelay();
 }
 
 void CheckSettingsSave() {
@@ -686,6 +711,10 @@ int main(void) {
     loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
     reverbTailBlocksFull = (int32_t)(REVERB_TAIL_SECONDS * hw.AudioSampleRate()
                                      / (float)hw.AudioBlockSize());
+    bypassToggleTransitionSamples =
+        (int32_t)(BYPASS_TOGGLE_TRANSITION_S * hw.AudioSampleRate());
+    muteOffTransitionSamples =
+        (int32_t)(MUTE_OFF_TRANSITION_S * hw.AudioSampleRate());
 
     // Reverb (allocates from SDRAM arena).
     InitReverbOrHalt();
@@ -712,13 +741,19 @@ int main(void) {
         LoadModel(previewModelIndex);
     }
 
-    // Restore LEDs / bypass state from persisted settings.
-    hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
-    hw.SetLed(1, currentSettings->namEnabled ? 1.0f : 0.0f);
-    hw.UpdateLeds();
+    // Restore the bypass state from persisted settings without running the
+    // mute sequence: at boot there is nothing to pop, and priming
+    // currentBypassState here is what stops the callback from firing a
+    // spurious transition on its first block.
     currentBypassState = !currentSettings->namEnabled && !currentSettings->reverbEnabled;
-    hw.SetAudioBypass(currentBypassState);
+    relayBypassOn = currentBypassState;
+    relayMuteOn = false;
+    hw.SetAudioBypass(relayBypassOn);
+    hw.SetAudioMute(relayMuteOn);
 
+    // Let the ADC settle so the first HandleKnobs() call sees real pot
+    // positions rather than half-charged sample-and-holds; otherwise the
+    // deadband latches a bogus value and the knobs feel dead until moved.
     hw.StartAdc();
     for (int i = 0; i < 20; ++i) {
         hw.ProcessAllControls();
@@ -726,36 +761,14 @@ int main(void) {
     }
     HandleKnobs();
 
+    // From here the audio callback owns the controls, the LEDs and the relay.
+    // The main loop must not touch them.
     hw.StartAudio(AudioCallback);
-    audioStarted = true;
 
     while (true) {
-        hw.ProcessAllControls();
-
-        HandleEncoderMovement();
-        HandleEncoderClick();
+        HandlePendingLoad();
         CheckPreviewTimeout();
-
-        HandleFootswitches();
-        HandleKnobs();
         HandleDspFault();
-
-        // Software PWM: the LEDs only advance their sawtooth when Update() is
-        // called. Driving it from footswitch edges alone meant they never lit.
-        hw.UpdateLeds();
-
-        // The audio thread sheds the model engine if the callback stops
-        // fitting in its block period; mirror that onto the LED and relay.
-        static bool overloadHandled = false;
-        if (cpuOverloadTripped && !overloadHandled) {
-            overloadHandled = true;
-            hw.SetLed(1, 0.0f);
-            hw.UpdateLeds();
-            UpdateBypassRelay();
-        } else if (!cpuOverloadTripped) {
-            overloadHandled = false;
-        }
-
         CheckSettingsSave();
 
         const uint32_t now = daisy::System::GetNow();

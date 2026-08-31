@@ -1,7 +1,5 @@
 #include "guitar_pedal_125b.h"
 
-#include <cstring>
-
 using namespace daisy;
 using namespace multifs;
 
@@ -219,9 +217,11 @@ void GuitarPedal125B::InitLeds(int count, Pin pins[]) {
         // software-PWM sawtooth phase -- untouched. Update() then evaluates
         // `bright_ > pwm_`, so a garbage phase outside [0,1) means the LED
         // never lights and the `if(pwm_ > 1) pwm_ -= 1` wrap never recovers it.
-        // Zero the object first; Init() writes every other member.
-        Led newLed;
-        std::memset(&newLed, 0, sizeof newLed);
+        // Start from a zeroed Led; Init() writes every other member. Led's
+        // default constructor is user-provided and empty, so `Led{}` would not
+        // zero anything -- but a static one lives in .bss, which is.
+        static const Led kZeroedLed;
+        Led newLed = kZeroedLed;
         newLed.Init(pins[i], false, AudioCallbackRate());
         leds.push_back(newLed);
     }

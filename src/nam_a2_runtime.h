@@ -307,8 +307,14 @@ private:
         }
     }
 
-    static inline SharedWeights weights_ NAM_A2_HOT_DATA;
-    static inline HotState hot_ NAM_A2_HOT_STATE_DATA;
+    // Declared here, defined exactly once in nam_processor.cpp. These must not
+    // be `static inline`: a section attribute on a vague-linkage member defeats
+    // per-variable COMDAT grouping, so each translation unit emits one plain
+    // named section holding all of its .dtcmram_bss data. The linker then keeps
+    // whichever copy it saw first and discards the rest, silently resolving
+    // symbols that only existed in a discarded section to address 0.
+    static SharedWeights weights_;
+    static HotState hot_;
     State state_;
 };
 

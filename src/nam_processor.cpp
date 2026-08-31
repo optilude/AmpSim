@@ -3,6 +3,12 @@
 #include <cmath>
 #include <algorithm>
 
+// The single definitions of Player's static members. Keeping them here rather
+// than in the header is what makes the section placement actually stick; see
+// the declarations in nam_a2_runtime.h.
+NAM_A2_HOT_DATA nam_a2::SharedWeights nam_a2::Player::weights_;
+NAM_A2_HOT_STATE_DATA nam_a2::HotState nam_a2::Player::hot_;
+
 NAM_A2_STATE_DATA static nam_a2::Player s_a2Player;
 
 NAMProcessor::NAMProcessor() = default;

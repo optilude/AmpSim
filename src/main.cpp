@@ -15,6 +15,7 @@
 #include "reverb_arena.h"
 #include "dattorro/dsp/delays/InterpDelay.hpp"
 #include "capture_index.h"
+#include "capture_verify.h"
 #include "ir_processor.h"
 #include "settings.h"
 #include "gain_stage.h"
@@ -301,6 +302,16 @@ void LoadModel(int index) {
 
     ShowMessage("Loading...", typeLine);
 
+    // The capture blob is read straight out of memory-mapped QSPI at an address
+    // baked in at build time. If that address is wrong the data still reads —
+    // it is just the wrong data, or unwritten flash (0xFF == NaN). Catch it here
+    // rather than letting NaN propagate into the EQ and reverb state.
+    if (!capture::VerifyEntry(entry)) {
+        ShowMessage("Bad model data", "reflash: make program");
+        hw.DelayMs(ERROR_DISPLAY_TIME_MS);
+        return;
+    }
+
     // Silence and stop the callback while NAM allocates and swaps model state.
     // This mirrors the intentional brief mute during model changes.
     audioSuppressed = true;
@@ -577,10 +588,26 @@ static void InitReverbOrHalt() {
     InterpDelayArena::set(nullptr, 0);
 }
 
+// libDaisy's startup code only zeroes .bss. The tiered-memory sections we
+// place NAM state into are NOLOAD and never cleared, so anything relying on
+// zero-initialization there (notably SharedWeights::loaded) starts as whatever
+// the RAM powered up with. Clear them before anything reads them.
+extern "C" {
+extern uint32_t __dtcmram_bss_start__, __dtcmram_bss_end__;
+extern uint32_t __sram_d2_bss_start__, __sram_d2_bss_end__;
+}
+
+static void ZeroUninitSections() {
+    for (uint32_t* p = &__dtcmram_bss_start__; p < &__dtcmram_bss_end__; ++p) *p = 0;
+    for (uint32_t* p = &__sram_d2_bss_start__; p < &__sram_d2_bss_end__; ++p) *p = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 int main(void) {
+    ZeroUninitSections();
+
     hw.Init(128, true);
     hw.SetAudioBlockSize(128);
     static_assert(ConvolutionEngine::L == 128, "Audio block size must match CONV_PARTITION_SIZE");

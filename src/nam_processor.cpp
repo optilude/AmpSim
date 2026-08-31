@@ -1,5 +1,7 @@
 #include "nam_processor.h"
 
+#include "float_guard.h"
+
 #include <cmath>
 #include <algorithm>
 
@@ -90,7 +92,7 @@ void NAMProcessor::reset()
 
 void NAMProcessor::recomputeOutputGain()
 {
-    if (!hasLoudness_ || std::isnan(loudnessTargetDb_)) {
+    if (!hasLoudness_ || fguard::IsNonFinite(loudnessTargetDb_)) {
         outputGain_ = 1.0f;
         return;
     }

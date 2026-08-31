@@ -7,6 +7,12 @@ TARGET = AmpSim
 # Enable NAM A2 fast path optimization, bare-metal support, and C++17
 CPP_STANDARD = -std=gnu++17
 
+# Match bkshepherd. libDaisy defaults to -O2, which is not enough for the
+# WaveNet inner loops. Note that -Ofast implies -ffinite-math-only, so
+# std::isnan/std::isfinite fold to false -- use fguard:: from float_guard.h
+# for any non-finite check that has to survive.
+OPT = -Ofast
+
 # Sources
 CPP_SOURCES = src/main.cpp \
               src/nam_processor.cpp \

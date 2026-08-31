@@ -87,6 +87,7 @@ volatile bool cpuOverloadTripped = false;
 // tail rings out instead of being cut dead. Unbounded trails would mean
 // paying for the reverb forever whenever the model engine is on.
 volatile int32_t reverbTailBlocks = 0;
+int32_t reverbTailBlocksFull = 0;  // REVERB_TAIL_SECONDS converted at init.
 
 // Set by the audio thread when the model path emits a non-finite sample.
 // The recovery (clearing the reverb tank) memsets ~1 MB of SDRAM, far too slow
@@ -108,14 +109,24 @@ float currentBassKnob = 0.5f;
 float currentMidKnob = 0.5f;
 float currentTrebleKnob = 0.5f;
 
-// Scratch buffers for block-based DSP. Sized for the maximum audio block
-// we ever configure (48 samples per SetAudioBlockSize in Init).
+// Audio block size. 48 matches the NAM A2 inference block exactly (one
+// inference per callback, flat load instead of the 2-or-3 the old 128 gave)
+// and puts the control/LED update rate at 1 kHz, which is what libDaisy's
+// Switch and Encoder debouncing is tuned for. Same value bkshepherd uses.
+static constexpr size_t kAudioBlock = 48;
+
+// Scratch buffers for block-based DSP.
 static constexpr size_t kMaxBlock = 128;
 float scratchDry[kMaxBlock];
 float scratchMid[kMaxBlock];
 float scratchWet[kMaxBlock];
-static float g_ir_freq_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
-static float g_ir_fdl_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sdram_bss")));
+
+// IR spectrum and frequency-domain delay line. These are the hottest large
+// buffers in the callback: every block streams both of them end to end, which
+// in SDRAM made the convolution memory-bound. RAM_D2 has the headroom and is
+// far closer to the core.
+static float g_ir_freq_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sram_d2_bss")));
+static float g_ir_fdl_buf[IRProcessor::kMaxPartitions * ConvolutionEngine::N] __attribute__((section(".sram_d2_bss")));
 
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
@@ -262,7 +273,7 @@ void UpdateDisplay() {
         hw.display.WriteString("CPU OVERLOAD: MDL off", Font_6x8, true);
     } else {
         const float load = loadMeter.GetAvgCpuLoad();
-        const int cpuPct = std::isfinite(load) ? (int)std::lround(load * 100.0f) : 0;
+        const int cpuPct = fguard::IsNonFinite(load) ? 0 : (int)std::lround(load * 100.0f);
         snprintf(line, sizeof line, "CPU%3d%% FS1:M FS2:R", cpuPct);
         hw.display.WriteString(line, Font_6x8, true);
     }
@@ -514,7 +525,7 @@ void HandleFootswitches() {
             reverbTailBlocks = 0;
         } else {
             // Let the tail ring out, then stop paying for the reverb.
-            reverbTailBlocks = REVERB_TAIL_BLOCKS;
+            reverbTailBlocks = reverbTailBlocksFull;
         }
         hw.SetLed(0, currentSettings->reverbEnabled ? 1.0f : 0.0f);
         hw.UpdateLeds();
@@ -654,9 +665,11 @@ static void ZeroUninitSections() {
 int main(void) {
     ZeroUninitSections();
 
-    hw.Init(128, true);
-    hw.SetAudioBlockSize(128);
-    static_assert(ConvolutionEngine::L == 128, "Audio block size must match CONV_PARTITION_SIZE");
+    hw.Init(kAudioBlock, true);
+    hw.SetAudioBlockSize(kAudioBlock);
+    static_assert(kAudioBlock <= kMaxBlock, "Audio block exceeds scratch capacity");
+    static_assert(kAudioBlock == nam_a2::kBlockSize,
+                  "Audio block should match the NAM inference block for a flat load");
 
     // Settings — must be initialized before anything reads currentSettings.
     settings.Init(hw.seed.qspi, SETTINGS_QSPI_OFFSET);
@@ -671,6 +684,8 @@ int main(void) {
     eq.Init(hw.AudioSampleRate());
     irProcessor.init(g_ir_freq_buf, g_ir_fdl_buf);
     loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+    reverbTailBlocksFull = (int32_t)(REVERB_TAIL_SECONDS * hw.AudioSampleRate()
+                                     / (float)hw.AudioBlockSize());
 
     // Reverb (allocates from SDRAM arena).
     InitReverbOrHalt();

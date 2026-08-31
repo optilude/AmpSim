@@ -49,27 +49,22 @@ public:
             return;
         }
 
-        float inputBuf[N];
-        std::memcpy(inputBuf, inputOverlap_, L * sizeof(float));
-        std::memcpy(inputBuf + L, in, L * sizeof(float));
+        std::memcpy(inputBuf_, inputOverlap_, L * sizeof(float));
+        std::memcpy(inputBuf_ + L, in, L * sizeof(float));
         std::memcpy(inputOverlap_, in, L * sizeof(float));
 
-        float inputFreq[N];
-        arm_rfft_fast_f32(&fftInst_, inputBuf, inputFreq, 0);
-        std::memcpy(fdlAt(fdlIndex_), inputFreq, N * sizeof(float));
+        arm_rfft_fast_f32(&fftInst_, inputBuf_, scratchA_, 0);
+        std::memcpy(fdlAt(fdlIndex_), scratchA_, N * sizeof(float));
 
-        float accumFreq[N];
-        std::memset(accumFreq, 0, sizeof(accumFreq));
+        std::memset(accumFreq_, 0, sizeof(accumFreq_));
         for (size_t p = 0; p < numPartitions_; ++p) {
             const size_t fdlIdx = (fdlIndex_ + numPartitions_ - p) % numPartitions_;
-            float product[N];
-            arm_cmplx_mult_cmplx_f32(fdlAt(fdlIdx), irFreqAt(p), product, N / 2);
-            arm_add_f32(accumFreq, product, accumFreq, N);
+            arm_cmplx_mult_cmplx_f32(fdlAt(fdlIdx), irFreqAt(p), scratchB_, N / 2);
+            arm_add_f32(accumFreq_, scratchB_, accumFreq_, N);
         }
 
-        float timeDomain[N];
-        arm_rfft_fast_f32(&fftInst_, accumFreq, timeDomain, 1);
-        std::memcpy(out, timeDomain + L, L * sizeof(float));
+        arm_rfft_fast_f32(&fftInst_, accumFreq_, scratchA_, 1);
+        std::memcpy(out, scratchA_ + L, L * sizeof(float));
 
         fdlIndex_ = (fdlIndex_ + 1) % numPartitions_;
     }
@@ -100,6 +95,15 @@ private:
     size_t fdlIndex_ = 0;
     bool prepared_ = false;
     float inputOverlap_[L]{};
+
+    // Scratch. Previously ~5 KB of stack arrays inside the audio ISR; as
+    // members of the (global) IRProcessor they land in .bss, which this
+    // linker script maps to DTCMRAM -- both faster and off the ISR stack.
+    float inputBuf_[N]{};
+    float accumFreq_[N]{};
+    float scratchA_[N]{};
+    float scratchB_[N]{};
+
     float* irFreq_ = nullptr;
     float* fdl_ = nullptr;
 };

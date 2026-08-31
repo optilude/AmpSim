@@ -93,6 +93,14 @@ daisy::CpuLoadMeter loadMeter;
 // period the main loop is starved and the pedal appears frozen. Disable the
 // model engine from the audio thread instead so control is never lost.
 volatile bool cpuOverloadTripped = false;
+int32_t overloadWarmupBlocks = 0;   // re-zero the meter when this hits 0
+int32_t overloadGraceBlocks = 0;    // cannot trip while this is above 0
+int32_t overloadStreakBlocks = 0;   // consecutive blocks over the threshold
+// The readings at the moment of the trip, held for the display. Without these
+// the screen only ever says "overloaded", which is not enough to tell a chain
+// that is 5% too slow from one that is 100% too slow.
+volatile float overloadAvgAtTrip = 0.0f;
+volatile float overloadMaxAtTrip = 0.0f;
 
 // Blocks left to keep running the reverb after it is switched off, so the
 // tail rings out instead of being cut dead. Unbounded trails would mean
@@ -186,6 +194,16 @@ static inline void StepBypassTiming(int32_t samples) {
 // 128x64 SSD1306. Font_6x8 => max 21 chars per line; Font_7x10 => max 18.
 // Text longer than that is truncated by the OLED driver, not our concern
 // beyond aesthetics — we still snprintf-clip our own buffers.
+
+// A CpuLoadMeter reading as a percent, clamped to three digits so it cannot
+// push the rest of the line off the display. NaN is what the meter holds
+// between Reset() and the first block end.
+static int LoadPercent(float load) {
+    if (fguard::IsNonFinite(load) || load <= 0.0f) return 0;
+    const int pct = (int)std::lround(load * 100.0f);
+    return pct > 999 ? 999 : pct;
+}
+
 void UpdateDisplay() {
     hw.display.Fill(false);
 
@@ -252,11 +270,15 @@ void UpdateDisplay() {
     } else if (dspFaultLatched) {
         hw.display.WriteString("Model NaN: MDL off", Font_6x8, true);
     } else if (cpuOverloadTripped) {
-        hw.display.WriteString("CPU OVERLOAD: MDL off", Font_6x8, true);
+        // The numbers matter: "97/104" is a chain that needs trimming,
+        // "180/240" is one that needs rethinking.
+        snprintf(line, sizeof line, "OVL%3d/%3d%% FS1 retry",
+                 LoadPercent(overloadAvgAtTrip), LoadPercent(overloadMaxAtTrip));
+        hw.display.WriteString(line, Font_6x8, true);
     } else {
-        const float load = loadMeter.GetAvgCpuLoad();
-        const int cpuPct = fguard::IsNonFinite(load) ? 0 : (int)std::lround(load * 100.0f);
-        snprintf(line, sizeof line, "CPU%3d%% FS1:M FS2:R", cpuPct);
+        snprintf(line, sizeof line, "CPU%3d/%3d%% F1:M F2:R",
+                 LoadPercent(loadMeter.GetAvgCpuLoad()),
+                 LoadPercent(loadMeter.GetMaxCpuLoad()));
         hw.display.WriteString(line, Font_6x8, true);
     }
 
@@ -429,6 +451,9 @@ void HandleFootswitches() {
             eq.Reset();
             cpuOverloadTripped = false;
             loadMeter.Reset();
+            overloadWarmupBlocks = CPU_LOAD_WARMUP_BLOCKS;
+            overloadGraceBlocks = CPU_OVERLOAD_GRACE_BLOCKS;
+            overloadStreakBlocks = 0;
             currentSettings->namEnabled = 1;
         } else {
             currentSettings->namEnabled = 0;
@@ -594,10 +619,29 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     // If the chain no longer fits in a block period the main loop stops
     // running and the pedal looks dead. Shed the most expensive stage from
     // here (the only context still scheduled) so the UI stays alive.
-    if (!cpuOverloadTripped && currentSettings->namEnabled
-        && loadMeter.GetAvgCpuLoad() > CPU_OVERLOAD_THRESHOLD) {
-        cpuOverloadTripped = true;
-        currentSettings->namEnabled = 0;
+    //
+    // Only once the reading is trustworthy, though: see the CPU_LOAD_* notes
+    // in constants.h for why a raw first-block reading is not.
+    if (!currentSettings->namEnabled) {
+        overloadStreakBlocks = 0;
+    } else if (overloadWarmupBlocks > 0 && --overloadWarmupBlocks == 0) {
+        // Throw away the warm-up, cold caches and engine resets included, so
+        // both the trip decision and the number on the display describe the
+        // steady state.
+        loadMeter.Reset();
+    } else if (overloadGraceBlocks > 0) {
+        --overloadGraceBlocks;
+    } else if (!cpuOverloadTripped) {
+        const float load = loadMeter.GetAvgCpuLoad();
+        // -Ofast folds std::isnan away; the meter parks NaN in avg_ on Reset().
+        if (fguard::IsNonFinite(load) || load <= CPU_OVERLOAD_THRESHOLD) {
+            overloadStreakBlocks = 0;
+        } else if (++overloadStreakBlocks >= CPU_OVERLOAD_TRIP_BLOCKS) {
+            overloadAvgAtTrip = load;
+            overloadMaxAtTrip = loadMeter.GetMaxCpuLoad();
+            cpuOverloadTripped = true;
+            currentSettings->namEnabled = 0;
+        }
     }
 }
 

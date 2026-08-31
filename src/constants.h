@@ -34,6 +34,25 @@ constexpr float REVERB_TAIL_SECONDS = 3.0f;
 // this the callback starves the main loop and the pedal stops responding.
 constexpr float CPU_OVERLOAD_THRESHOLD = 0.95f;
 
+// Turning the model engine on makes the first block the most expensive one
+// there will ever be: it runs the engine resets and the first inference with a
+// cold I-cache. CpuLoadMeter::Reset() arms firstCycle_, so that one block is
+// assigned straight to the average with no smoothing -- which tripped the
+// overload detector on every single FS1 press, including the retry.
+//
+// So the load is left to settle before it is believed. Blocks, not
+// milliseconds, because the callback is the only thing counting: at the 48
+// sample block these are 1 ms each.
+//
+// WARMUP < GRACE, so the meter is re-zeroed partway through the grace period
+// and the reading that can trip is built entirely from warm blocks.
+constexpr int32_t CPU_LOAD_WARMUP_BLOCKS = 100;      // then re-zero the meter
+constexpr int32_t CPU_OVERLOAD_GRACE_BLOCKS = 400;   // 300 ms of clean data
+// The average is a 1 Hz one-pole (~160 ms), so it does not spike; requiring it
+// to stay over the line is cheap insurance against a burst that does get
+// through -- one partitioned-convolution block, say.
+constexpr int32_t CPU_OVERLOAD_TRIP_BLOCKS = 50;
+
 // EQ frequencies (Hz)
 constexpr float BASS_FREQ = 100.0f;
 constexpr float MID_FREQ = 1000.0f;

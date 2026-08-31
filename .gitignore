@@ -24,6 +24,8 @@ test_ir
 !/Models/Martin JTM50/
 !/Models/Martin JTM50/**
 
+**/__pycache__/**
+
 # Spurious files from Daisy Makefile bug (see Makefile line 51-54)
 -fasm
 -fexceptions

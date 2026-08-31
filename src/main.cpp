@@ -1,4 +1,10 @@
 // AmpSim - Guitar Amp Simulator based on Daisy Seed
+// Copyright (c) 2025 AmpSim Contributors
+//
+// LICENSING NOTE: This project includes GPL v3-licensed components
+// (Dattorro reverb from Flick project). See LICENSE and THIRD_PARTY.md
+// for full licensing details and compliance information.
+//
 // NAM A2 processing with Dattorro plate reverb and full control scheme.
 //
 // Signal path (per audio block):

@@ -1,5 +1,22 @@
 //
-// This plate reverb is based upon Jon Dattorro's 1997 reverb algorithm.
+// Dattorro 1997 Plate Reverb Implementation
+// LICENSED UNDER GPL v3 - See LICENSE and THIRD_PARTY.md
+//
+// Academic Algorithm:
+// - Based on: "Effect Design Using Delay Networks" by Jon Dattorro
+//   Proc. 1997 AES Conference, Copenhagen, Denmark, Paper 4780
+//   Reference: https://www.dafx.de/paper-archive/1997/P056.PDF
+//
+// Derivation Lineage:
+// - Original Algorithm: Jon Dattorro (1997)
+// - Implementation: Derived from Flick pedal project
+//   https://github.com/joulupukki/Flick (GPL v3)
+//   Author: joulupukki
+// - Adaptation: AmpSim Contributors (2025)
+//
+// This implementation is subject to GPL v3 licensing due to derivation from
+// the Flick project. See LICENSE file for GPL v3 terms and THIRD_PARTY.md
+// for detailed attribution and compliance information.
 //
 
 #pragma once

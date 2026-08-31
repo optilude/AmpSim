@@ -1,0 +1,103 @@
+MIT License
+
+Copyright (c) 2025 AmpSim Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+IMPORTANT NOTE ON GPL-LICENSED COMPONENTS:
+
+The Dattorro plate reverb implementation (src/dattorro/) is licensed
+under GPL v3. This means the reverb implementation is subject to GPL v3 terms.
+
+If you use, modify, or distribute this software (particularly the reverb
+components), you must comply with the GPL v3 license terms. This primarily
+means that any distribution must include the GPL v3 license and provide source
+code for any modifications.
+
+See the THIRD_PARTY.md file for detailed attribution and licensing information.
+
+================================================================================
+
+THIRD-PARTY LICENSES AND ATTRIBUTIONS:
+
+================================================================================
+
+libDaisy (https://github.com/electro-smith/libDaisy)
+- License: MIT
+- Copyright (c) 2019 Electrosmith
+- Used for: Core hardware abstraction and DSP primitives
+
+DaisySP (https://github.com/electro-smith/DaisySP)
+- License: MIT
+- Copyright (c) 2020 Electrosmith, Corp.
+- Includes components from:
+  * Plaits (Emilie Gillet, MIT)
+  * Soundpipe (Paul Batchelor, MIT)
+- Used for: DSP filters and modulation utilities
+
+NeuralAmpModelerCore (https://github.com/sdatkinson/NeuralAmpModeler)
+- License: MIT
+- Copyright (c) 2023 Steven Atkinson
+- Used for: NAM A2 Lite neural amp model inference (reference only;
+  firmware uses static A2 runtime)
+
+Flick Pedal - Dattorro Reverb Implementation (https://github.com/joulupukki/Flick)
+- License: GPL v3
+- Copyright (c) joulupukki
+- Used for: Dattorro 1997 plate reverb implementation (src/dattorro/)
+- The reverb tank, allpass filters, LFO modulation, and related DSP
+  components are derived from the Flick project. Under GPL v3, derivative
+  works must maintain this license.
+
+Dattorro 1997 Plate Reverb Algorithm
+- Based on: "Effect Design Using Delay Networks" by Jon Dattorro
+  (Proc. 1997 AES Conference, Copenhagen, Denmark, Paper 4780)
+- Reference: https://www.dafx.de/paper-archive/1997/P056.PDF
+
+================================================================================
+
+HARDWARE & THIRD-PARTY:
+
+Hardware based on: DaisySeedProjects 125B PCB
+- By bkshepherd (https://github.com/bkshepherd/DaisySeedProjects)
+- See hardware directory for PCB design licenses
+
+STM32H7 Microcontroller
+- Hardware by STMicroelectronics
+- See libDaisy/Drivers/ for STM32 HAL and CMSIS licenses
+
+================================================================================
+
+DEPENDENCIES:
+
+All dependencies retain their original licenses as found in their respective
+directories. In particular:
+
+- libDaisy/Drivers/STM32H7xx_HAL_Driver/: STM32 HAL license
+- libDaisy/Drivers/CMSIS*: ARM CMSIS license
+- DaisySP/: Combined MIT licenses as documented in DaisySP/LICENSE
+- src/dattorro/: GPL v3 (derived from Flick project)
+
+When building or distributing this project, ensure compliance with all
+transitive dependencies, particularly the GPL v3 license for the reverb
+components derived from the Flick project.
+
+================================================================================

@@ -725,6 +725,10 @@ int main(void) {
         HandleKnobs();
         HandleDspFault();
 
+        // Software PWM: the LEDs only advance their sawtooth when Update() is
+        // called. Driving it from footswitch edges alone meant they never lit.
+        hw.UpdateLeds();
+
         // The audio thread sheds the model engine if the callback stops
         // fitting in its block period; mirror that onto the LED and relay.
         static bool overloadHandled = false;

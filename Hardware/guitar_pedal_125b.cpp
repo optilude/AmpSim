@@ -1,5 +1,7 @@
 #include "guitar_pedal_125b.h"
 
+#include <cstring>
+
 using namespace daisy;
 using namespace multifs;
 
@@ -213,7 +215,13 @@ void GuitarPedal125B::InitEncoders(int count, Pin pins[][3]) {
 
 void GuitarPedal125B::InitLeds(int count, Pin pins[]) {
     for (int i = 0; i < count; i++) {
+        // daisy::Led::Init() sets bright_ and pwm_cnt_ but leaves pwm_ -- the
+        // software-PWM sawtooth phase -- untouched. Update() then evaluates
+        // `bright_ > pwm_`, so a garbage phase outside [0,1) means the LED
+        // never lights and the `if(pwm_ > 1) pwm_ -= 1` wrap never recovers it.
+        // Zero the object first; Init() writes every other member.
         Led newLed;
+        std::memset(&newLed, 0, sizeof newLed);
         newLed.Init(pins[i], false, AudioCallbackRate());
         leds.push_back(newLed);
     }

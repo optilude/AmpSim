@@ -54,11 +54,20 @@ SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 LDFLAGS += -T$(abspath src/nam_a2_sections.lds)
 include $(SYSTEM_FILES_DIR)/Makefile
 
-# Fix Daisy Makefile bug: dependency flags create spurious files
+# Fix Daisy Makefile bug: dependency flags create spurious files.
 # Daisy sets -MF"$(@:%.o=%.d)" in global CPPFLAGS, which expands to -MF""
-# outside of build rules, causing GCC to create files named after the next flag
-# The dependency generation is already handled in the pattern rules, so remove it here
+# outside of build rules, causing GCC to create files named after the next flag.
 CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
+
+# ...but the C++ pattern rule was the only thing generating those .d files, so
+# stripping them left every C++ object with no header dependencies at all.
+# Editing a header -- nam_a2_runtime.h, say, which is the entire DSP hot path
+# -- produced a silently stale binary that still flashed and ran. Put the flags
+# back inside the rule, where $@ is actually defined and the expansion is the
+# object's own name. libDaisy's Makefile already -includes build/*.d.
+$(BUILD_DIR)/%.o: %.cpp Makefile | $(BUILD_DIR)
+	$(CXX) -c $(CPPFLAGS) $(CPP_STANDARD) -MMD -MP -MF"$(@:%.o=%.d)" \
+		-Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.cpp=.lst)) $< -o $@
 
 # Static A2 Lite runtime is exception-free and allocation-free in audio.
 

@@ -99,11 +99,22 @@ Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → 
 
 **Knob ranges:**
 - **Gain knobs (0, 1)**: Fully CCW = -20dB, Noon = 0dB, Fully CW = +20dB
-- **Reverb Mix (2)**: Fully CCW = 0% (dry), Fully CW = 100% (wet, no dry).
-  Crossfade on a squared taper (`wet = knob²`, `dry = 1 - wet`), matching
-  MuleBox — this approximates an audio-taper pot so the bottom of the travel
-  stays subtle rather than arriving all at once. The displayed percentage is
-  knob position, not the wet fraction: knob 30% is 9% wet.
+- **Reverb Mix (2)**: Fully CCW = dry only, fully CW = a wet wash with the amp
+  still audible underneath. Crossfade on a squared taper:
+
+  ```
+  wet = knob²
+  dry = 1 - 0.8 × wet        (bottoms out at 0.2, i.e. -14 dB)
+  ```
+
+  Squaring approximates an audio-taper pot, so the bottom of the travel stays
+  subtle instead of arriving all at once — this is MuleBox's law. Unlike
+  MuleBox the dry never fades out completely: that suits a reverb pedal, but
+  this is an amp simulator and losing the direct amp sound at one end of a
+  knob is not useful. Tune via `ReverbProcessor::kMinDryAtFullWet`.
+
+  The displayed percentage is **knob position, not the wet fraction** — knob
+  30% is 9% wet.
 - **EQ knobs (3-5)**: Fully CCW = -12dB cut, Noon = flat, Fully CW = +12dB boost
 
 ### Rotary Encoder

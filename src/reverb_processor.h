@@ -14,6 +14,11 @@
 
 class ReverbProcessor {
 public:
+    // Dry level with the mix knob fully clockwise: -14 dB, still clearly
+    // present under the wet. Raise for a more conservative maximum, or set to
+    // 0.0f for MuleBox's behaviour of fading the dry out completely.
+    static constexpr float kMinDryAtFullWet = 0.2f;
+
     // Construct the tank and apply the Flick/MuleBox preset.
     // Call this AFTER InterpDelayArena::set(...) so buffers land in SDRAM.
     //
@@ -98,14 +103,19 @@ public:
     // makes audible in a quiet room. Squared it is -60 dB, which is not.
     //
     // Dry falls as wet rises rather than staying at unity, so the total level
-    // holds roughly steady across the sweep instead of climbing. The cost is
-    // that fully clockwise is 100% wet with no dry at all.
+    // holds roughly steady across the sweep instead of climbing.
+    //
+    // Unlike MuleBox, dry does not fade to nothing: it bottoms out at
+    // kMinDryAtFullWet. MuleBox is a reverb pedal, where a fully wet wash is
+    // a legitimate setting; this is an amp simulator, and losing the direct
+    // amp sound entirely at one end of a knob is not useful. Fully clockwise
+    // is a very wet wash with the amp still audible under it.
     void setMix(float mix) {
         if (mix < 0.0f) mix = 0.0f;
         if (mix > 1.0f) mix = 1.0f;
         const float m = mix * mix;
         wetMix_ = m;
-        dryMix_ = 1.0f - m;
+        dryMix_ = 1.0f - (1.0f - kMinDryAtFullWet) * m;
     }
 
     void setDecay(float decay) {

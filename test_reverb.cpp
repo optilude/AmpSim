@@ -54,16 +54,22 @@ int main() {
     }
     printf("[PASS] mix=0.0 yields pure dry signal\n");
 
-    // 3) mix=1 with an impulse — wet-only, must be non-zero eventually.
+    // 3) mix=1 with an impulse — the wet tail must be non-zero eventually.
     rp.setMix(1.0f);
     rp.clear();
     // Feed an impulse then silence, watch for a non-zero tail within a
     // reasonable window (< 500 ms). Reverb has pre-delay/APF latency so
     // early samples may still be zero.
+    //
+    // Skip sample 0: dry does not fade out completely at full wet (it floors
+    // at kMinDryAtFullWet), so the impulse itself appears in the output and
+    // would dominate the peak, making this measure the dry path rather than
+    // the tail it claims to.
     float maxAbs = 0.0f;
     for (int i = 0; i < 24000; ++i) {  // 500 ms at 48kHz
         const float x = (i == 0) ? 1.0f : 0.0f;
         rp.process(x, x, &l, &r);
+        if (i == 0) continue;
         maxAbs = std::max(maxAbs, std::max(std::fabs(l), std::fabs(r)));
     }
     if (maxAbs < 1e-4f) {
@@ -82,19 +88,26 @@ int main() {
     }
     printf("[PASS] Silent input eventually decays\n");
 
-    // 5) The mix law is a squared-taper crossfade (see ReverbProcessor::setMix):
-    //    for knob k, m = k*k and out = (1-m)*dry + m*wet. Measure the pure wet
-    //    signal at k=1 (where dry has faded out entirely), then check that an
-    //    intermediate knob position lands where the law says it should.
-    //    k=0.5 gives m=0.25, so the output is 0.75*dry + 0.25*wet. If the
-    //    squaring were dropped this would read 0.5/0.5 and fail, which is the
-    //    point: the taper is what keeps the bottom of the sweep usable.
+    // 5) Pin the mix law (see ReverbProcessor::setMix). For knob k:
+    //        m   = k*k                                   (squared taper)
+    //        wet = m
+    //        dry = 1 - (1 - kMinDryAtFullWet) * m
+    //
+    //    Drive both knob positions with the same steady 1.0 input so the tank
+    //    reaches the same wet signal W, then solve for W from the k=1 reading
+    //    and predict the k=0.5 one. W cannot be read directly because dry does
+    //    not vanish at full wet.
+    //
+    //    At k=0.5, m=0.25: dry 0.8, wet 0.25. Drop the squaring and this reads
+    //    0.6/0.5 instead, which is the regression worth catching -- the taper
+    //    is what keeps the bottom of the sweep usable.
+    constexpr float kDryFloor = ReverbProcessor::kMinDryAtFullWet;
     rp.clear();
     rp.setMix(1.0f);
-    float wetOnly = 0.0f;
+    float fullWet = 0.0f;
     for (int i = 0; i < 4800; ++i) {  // 100 ms warmup
         rp.process(1.0f, 1.0f, &l, &r);
-        wetOnly = l;
+        fullWet = l;
     }
     rp.clear();
     rp.setMix(0.5f);
@@ -103,14 +116,29 @@ int main() {
         rp.process(1.0f, 1.0f, &l, &r);
         halfMix = l;
     }
+    // fullWet = kDryFloor * 1.0 + 1.0 * W  =>  W = fullWet - kDryFloor
+    const float W = fullWet - kDryFloor;
     const float m = 0.5f * 0.5f;
-    const float expected = (1.0f - m) * 1.0f + m * wetOnly;
+    const float expected = (1.0f - (1.0f - kDryFloor) * m) * 1.0f + m * W;
     if (std::fabs(halfMix - expected) > 0.02f) {
-        printf("wetOnly=%.4f halfMix=%.4f expected~%.4f\n",
-               wetOnly, halfMix, expected);
-        return fail("knob=0.5 must give 0.75*dry + 0.25*wet (squared taper)");
+        printf("fullWet=%.4f W=%.4f halfMix=%.4f expected~%.4f\n",
+               fullWet, W, halfMix, expected);
+        return fail("knob=0.5 must give 0.8*dry + 0.25*wet (squared taper)");
     }
-    printf("[PASS] knob=0.5 gives 0.75*dry + 0.25*wet (squared taper)\n");
+    printf("[PASS] knob=0.5 gives 0.8*dry + 0.25*wet (squared taper)\n");
+
+    // 6) The dry floor itself: fully clockwise must still pass audible dry,
+    //    which is the whole point of not using MuleBox's full fade-out.
+    //    Feed silence until the tank is empty, then check a DC input comes
+    //    through at the floor level.
+    rp.clear();
+    rp.setMix(1.0f);
+    for (int i = 0; i < 4800; ++i) rp.process(0.0f, 1.0f, &l, &r);
+    if (std::fabs(l - kDryFloor) > 1e-4f) {
+        printf("l=%.4f expected %.4f\n", l, kDryFloor);
+        return fail("full wet must still pass dry at kMinDryAtFullWet");
+    }
+    printf("[PASS] full wet still passes dry at %.2f\n", kDryFloor);
 
     printf("\nAll reverb tests passed.\n");
     return 0;

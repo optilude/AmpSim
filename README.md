@@ -147,7 +147,7 @@ make program-boot-probe
 make program-dfu
 ```
 
-*Option B - Debug probe (recommended):*
+*Option B - Debug probe:*
 ```bash
 # 1. Connect STLINK debug probe
 # 2. Run:

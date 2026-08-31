@@ -26,6 +26,15 @@ public:
     void SetMid(float gainNorm) { mid_.setGainDb(gainNorm * EQ_RANGE_DB); }
     void SetTreble(float gainNorm) { treble_.setGainDb(gainNorm * EQ_RANGE_DB); }
 
+    // Rewind the filter state without touching the coefficients. DF-I biquads
+    // feed their own output back, so one non-finite sample latches the band
+    // permanently; this is the only way back short of a reboot.
+    void Reset() {
+        bass_.resetState();
+        mid_.resetState();
+        treble_.resetState();
+    }
+
     float Process(float in) {
         float x = bass_.process(in);
         x = mid_.process(x);
@@ -64,8 +73,10 @@ private:
             kind = k;
             gainDb = 0.0f;  // Force setGainDb below to run.
             setGainDb(gDb);
-            x1 = x2 = y1 = y2 = 0.0f;
+            resetState();
         }
+
+        void resetState() { x1 = x2 = y1 = y2 = 0.0f; }
 
         void setGainDb(float g) {
             if (g == gainDb) return;

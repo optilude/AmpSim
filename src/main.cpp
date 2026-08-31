@@ -21,6 +21,7 @@
 #include "gain_stage.h"
 #include "guitar_eq.h"
 #include "constants.h"
+#include "float_guard.h"
 #include "helpers.h"
 #include "util/CpuLoadMeter.h"
 
@@ -86,6 +87,12 @@ volatile bool cpuOverloadTripped = false;
 // tail rings out instead of being cut dead. Unbounded trails would mean
 // paying for the reverb forever whenever the model engine is on.
 volatile int32_t reverbTailBlocks = 0;
+
+// Set by the audio thread when the model path emits a non-finite sample.
+// The recovery (clearing the reverb tank) memsets ~1 MB of SDRAM, far too slow
+// for the ISR, so the main loop picks this up and does the work.
+volatile bool dspFaultPending = false;
+volatile bool dspFaultLatched = false;
 
 // Audio-callback-visible suppression flag. Set while the analog mute is
 // engaged around a relay flip so the DSP outputs silence for the duration
@@ -249,6 +256,8 @@ void UpdateDisplay() {
     hw.display.SetCursor(0, 52);
     if (isPreviewingModel) {
         hw.display.WriteString("Click to load", Font_6x8, true);
+    } else if (dspFaultLatched) {
+        hw.display.WriteString("Model NaN: MDL off", Font_6x8, true);
     } else if (cpuOverloadTripped) {
         hw.display.WriteString("CPU OVERLOAD: MDL off", Font_6x8, true);
     } else {
@@ -401,6 +410,14 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
             for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchMid[i];
         }
         
+        // Catch a non-finite sample before it reaches the EQ or the reverb.
+        // Both recirculate their output into their own state, so one NaN here
+        // silences the pedal until power-cycled. Silencing the block and
+        // handing recovery to the main loop keeps the reverb usable.
+        if (fguard::SilenceIfNonFinite(scratchWet, size)) {
+            dspFaultPending = true;
+        }
+
         // 3) Tone stack (only when model engine is on — pass-through otherwise).
         eq.ProcessBlock(scratchWet, scratchWet, size);
     } else {
@@ -509,11 +526,18 @@ void HandleFootswitches() {
     if (hw.switches[1].RisingEdge()) {
         const bool enabling = !currentSettings->namEnabled;
         if (enabling) {
-            // reset()/clear() rewind state the audio callback is actively
+            if (dspFaultLatched) {
+                // Recovery dropped the IR spectrum, so a rewind is not enough:
+                // reload the model from QSPI (which re-verifies its CRC).
+                dspFaultLatched = false;
+                LoadModel(currentSettings->modelIndex);
+            }
+            // reset()/resetState() rewind state the audio callback is actively
             // reading, so silence the DSP for the duration.
             audioSuppressed = true;
             namProcessor.reset();
-            irProcessor.clear();
+            irProcessor.resetState();
+            eq.Reset();
             cpuOverloadTripped = false;
             loadMeter.Reset();
             currentSettings->namEnabled = 1;
@@ -550,6 +574,28 @@ void HandleKnobs() {
                [](float) {});
     UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob,
                [](float) {});
+}
+
+// Recover from a non-finite sample reported by the audio thread. Everything
+// here is too slow for the ISR: Dattorro::clear() memsets the whole SDRAM
+// tank. Shut the model engine down rather than re-enabling it blind — the data
+// or the model is bad, and looping through the fault would just stutter.
+void HandleDspFault() {
+    if (!dspFaultPending) return;
+    dspFaultPending = false;
+    dspFaultLatched = true;
+
+    audioSuppressed = true;
+    currentSettings->namEnabled = 0;
+    namProcessor.reset();
+    irProcessor.clear();
+    eq.Reset();
+    reverbProcessor.clear();
+    loadMeter.Reset();
+    audioSuppressed = false;
+
+    hw.SetLed(1, 0.0f);
+    UpdateBypassRelay();
 }
 
 void CheckSettingsSave() {
@@ -677,6 +723,7 @@ int main(void) {
 
         HandleFootswitches();
         HandleKnobs();
+        HandleDspFault();
 
         // The audio thread sheds the model engine if the callback stops
         // fitting in its block period; mirror that onto the LED and relay.

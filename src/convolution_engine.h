@@ -74,10 +74,20 @@ public:
         fdlIndex_ = (fdlIndex_ + 1) % numPartitions_;
     }
 
+    // Rewind the running state, keeping the prepared IR spectrum.
     void Reset() {
         std::memset(inputOverlap_, 0, sizeof(inputOverlap_));
         if (fdl_) std::memset(fdl_, 0, maxPartitions_ * N * sizeof(float));
         fdlIndex_ = 0;
+    }
+
+    // Drop the prepared IR as well. Reset() alone leaves irFreq_ intact, so a
+    // spectrum that picked up a NaN would survive and re-poison every block.
+    void Clear() {
+        Reset();
+        if (irFreq_) std::memset(irFreq_, 0, maxPartitions_ * N * sizeof(float));
+        numPartitions_ = 0;
+        prepared_ = false;
     }
 
 private:

@@ -34,8 +34,19 @@ public:
     }
 
     bool isLoaded() const { return loaded_; }
-    void clear() {
+
+    // Rewind the overlap/FDL state but keep the loaded IR. This is what
+    // re-enabling the model engine wants.
+    void resetState() {
         convolution_.Reset();
+    }
+
+    // Unload entirely. Used before loading a different model, and as part of
+    // recovering from a non-finite sample -- clear() must drop the IR spectrum
+    // and the loaded_ flag together, or processBlock keeps convolving.
+    void clear() {
+        convolution_.Clear();
+        loaded_ = false;
     }
 
 private:

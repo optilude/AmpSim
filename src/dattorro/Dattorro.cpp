@@ -119,6 +119,18 @@ void Dattorro1997Tank::setSampleRate(const float newSampleRate) {
 
     fadeStep = 1.0f / sampleRate;
 
+    // The four tank LFOs are default-constructed at 32 kHz and nothing ever
+    // told them otherwise, so they have always computed their phase step for
+    // the wrong rate: at 48 kHz they ran at 32/48 = 0.67x the frequency the
+    // preset asks for. Harmless-looking until the tank rate changes, at which
+    // point the modulation speed changes with it -- and these LFOs detune the
+    // tank allpasses to break up standing waves, which is exactly what
+    // separates a lush plate from a metallic one.
+    lfo1.setSamplerate(sampleRate);
+    lfo2.setSamplerate(sampleRate);
+    lfo3.setSamplerate(sampleRate);
+    lfo4.setSamplerate(sampleRate);
+
     leftOutDCBlock.setSampleRate(sampleRate);
     rightOutDCBlock.setSampleRate(sampleRate);
 

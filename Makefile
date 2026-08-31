@@ -71,22 +71,50 @@ CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 # app-only target is not offered at all.
 .PHONY: program program-dfu program-boot-probe captures combined
 
-captures: tools/build_capture_blob.py
-	@echo "Rebuilding capture blob..."
+# The capture blob and src/capture_index.h are generated from Models/.
+#
+# Two layers of change detection, because this used to force a full rebuild on
+# every single make: the generator was phony, so it reran and rewrote
+# capture_index.h -- which every translation unit includes -- each time. Ten
+# seconds of compiling is long enough to miss the bootloader's DFU window.
+#
+#   1. The generator runs on every make, but it is 0.15 s and it only rewrites
+#      an output whose content actually changed.
+#   2. Objects depend on the generated header as an ordinary prerequisite, so
+#      they rebuild exactly when its content moved -- not when a model file was
+#      merely touched, and not just because make ran.
+#
+# `captures` is an order-only prerequisite (the `|`): it is guaranteed to run
+# before anything is compiled, but being phony it never itself forces a
+# rebuild. That is what stops the generator from invalidating the world.
+CAPTURE_HDR = src/capture_index.h
+CAPTURE_BIN = build/capture_data.bin
+COMBINED_BIN = build/combined.bin
+
+captures:
 	@mkdir -p build
-	python3 tools/build_capture_blob.py Models/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
+	@python3 tools/build_capture_blob.py Models/ --out-bin $(CAPTURE_BIN) --out-header $(CAPTURE_HDR) --out-map build/capture_data.map > /dev/null
 
-$(OBJECTS): captures
+$(CAPTURE_HDR) $(CAPTURE_BIN): | captures
 
-combined: all captures
+$(OBJECTS): $(CAPTURE_HDR)
+
+$(COMBINED_BIN): all $(CAPTURE_BIN) tools/make_combined_image.py
 	@echo "Creating combined firmware + capture blob..."
-	python3 tools/make_combined_image.py --app $(BUILD_DIR)/$(TARGET_BIN) --captures build/capture_data.bin --out build/combined.bin
+	python3 tools/make_combined_image.py --app $(BUILD_DIR)/$(TARGET_BIN) --captures $(CAPTURE_BIN) --out $@
 
-program-dfu: combined
-	@echo "Flashing combined firmware to QSPI over DFU..."
-	dfu-util -a 0 -s $(FLASH_ADDRESS):leave -D build/combined.bin -d ,0483:$(USBPID)
+# Build the flashable image without flashing it. Useful right before a DFU
+# session so the compile is already done when the window opens.
+combined: $(COMBINED_BIN)
 
-program: combined
+# -w waits for the device to enumerate instead of failing if it is not already
+# in DFU mode, so the bootloader's window does not have to be won in a race
+# against the build. Press reset whenever; this will pick it up.
+program-dfu: $(COMBINED_BIN)
+	@echo "Waiting for Daisy in DFU mode -- press RESET on the pedal now."
+	dfu-util -w -a 0 -s $(FLASH_ADDRESS):leave -D $(COMBINED_BIN) -d ,0483:$(USBPID)
+
+program: $(COMBINED_BIN)
 	@echo "Flashing combined firmware to QSPI..."
 	$(OCD) -s $(OCD_DIR) \
 		-f $(PGM_DEVICE) \
@@ -128,16 +156,17 @@ help:
 	@echo "    1. Connect STLINK debug probe"
 	@echo "    2. Run 'make program-boot-probe'"
 	@echo ""
-	@echo "Flashing firmware:"
+	@echo "Flashing firmware (always flashes app + capture blob together):"
 	@echo "  Option A - USB only:"
-	@echo "    1. Enter Daisy bootloader (press RESET)"
-	@echo "    2. Run 'make program-dfu' within 2.5 seconds"
+	@echo "    1. Run 'make program-dfu' -- it builds, then waits for the device"
+	@echo "    2. Press RESET on the pedal when it says so (no time pressure)"
 	@echo "  Option B - Debug probe (no USB or buttons needed):"
 	@echo "    1. Connect STLINK debug probe"
 	@echo "    2. Run 'make program'"
 	@echo ""
 	@echo "Common targets:"
 	@echo "  make                  - Build the project"
+	@echo "  make combined         - Build build/combined.bin without flashing"
 	@echo "  make clean            - Clean build files"
 	@echo "  make clean-all        - Clean including library builds"
 	@echo "  make program-boot     - Flash bootloader via USB DFU"

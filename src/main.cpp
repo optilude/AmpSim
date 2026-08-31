@@ -2,7 +2,10 @@
 // NAM A2 processing with Dattorro plate reverb and full control scheme.
 //
 // Signal path (per audio block):
-//   in[0] -> [inputGain] -> [NAM] -> [IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
+//   in[0] -> [inputGain] -> [NAM or IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
+//
+// A model is a NAM capture or a cabinet IR, never both: chaining them costs
+// both engines' budgets in one block and does not fit alongside the reverb.
 //
 // The dry+wet mix is applied inside ReverbProcessor::process. When both
 // effects are off, the true-bypass relay handles the analog path and the
@@ -85,7 +88,7 @@ int32_t muteOffTransitionSamples = 0;
 // QSPI and paints the display, so it has to happen on the main loop.
 volatile int pendingLoadIndex = -1;
 
-// Audio callback timing. The full chain (NAM + IR + EQ + reverb) is close to
+// Audio callback timing. The heaviest chain (NAM + EQ + reverb) is close to
 // the per-block budget, so the load is measured and surfaced on the display.
 daisy::CpuLoadMeter loadMeter;
 
@@ -137,7 +140,6 @@ static constexpr size_t kAudioBlock = 48;
 // Scratch buffers for block-based DSP.
 static constexpr size_t kMaxBlock = 128;
 float scratchDry[kMaxBlock];
-float scratchMid[kMaxBlock];
 float scratchWet[kMaxBlock];
 
 // IR spectrum and frequency-domain delay line. These are the hottest large
@@ -230,7 +232,6 @@ void UpdateDisplay() {
         switch (model_entries[shownIndex].type) {
             case ModelType::NamOnly: typeStr = "[NAM]"; break;
             case ModelType::IrOnly: typeStr = "[IR]"; break;
-            case ModelType::NamAndIr: typeStr = "[N+I]"; break;
         }
         snprintf(line, sizeof line, "%.15s %s", model_entries[shownIndex].variant_name, typeStr);
     } else {
@@ -323,7 +324,6 @@ void LoadModel(int index) {
     switch (entry.type) {
         case ModelType::NamOnly: typeStr = "[NAM]"; break;
         case ModelType::IrOnly: typeStr = "[IR]"; break;
-        case ModelType::NamAndIr: typeStr = "[NAM+IR]"; break;
     }
     snprintf(typeLine, sizeof typeLine, "%s %s", entry.variant_name, typeStr);
 
@@ -360,11 +360,9 @@ void LoadModel(int index) {
     namProcessor.reset();
     irProcessor.clear();
     
-    if (entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr) {
+    if (entry.type == ModelType::NamOnly) {
         ok &= namProcessor.loadModel(entry);
-    }
-    
-    if (entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) {
+    } else if (entry.type == ModelType::IrOnly) {
         ok &= irProcessor.loadModel(entry);
     }
     
@@ -523,21 +521,20 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     // 2) Selected model engine: NAM A2 Lite and/or cabinet IR.
     if (currentSettings->namEnabled && IsValidModelIndex(currentSettings->modelIndex)) {
         const ModelEntry& entry = model_entries[currentSettings->modelIndex];
-        
-        // Pass 1: NAM
-        if ((entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr) && namProcessor.isModelLoaded()) {
-            namProcessor.process(scratchDry, scratchMid, size);
+
+        // One engine or the other, never both -- running a NAM into a cabinet
+        // IR costs both their budgets in the same block, which does not fit
+        // alongside the reverb. So this is a single pass with no intermediate
+        // buffer rather than the NAM-then-IR chain it used to be.
+        if (entry.type == ModelType::NamOnly && namProcessor.isModelLoaded()) {
+            namProcessor.process(scratchDry, scratchWet, size);
+        } else if (entry.type == ModelType::IrOnly && irProcessor.isLoaded()) {
+            irProcessor.processBlock(scratchDry, scratchWet, size);
         } else {
-            for (size_t i = 0; i < size; ++i) scratchMid[i] = scratchDry[i];
+            for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
         }
-        
-        // Pass 2: IR
-        if ((entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) && irProcessor.isLoaded()) {
-            irProcessor.processBlock(scratchMid, scratchWet, size);
-        } else {
-            for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchMid[i];
-        }
-        
+
+
         // Catch a non-finite sample before it reaches the EQ or the reverb.
         // Both recirculate their output into their own state, so one NaN here
         // silences the pedal until power-cycled. Silencing the block and

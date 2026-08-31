@@ -18,7 +18,7 @@ NAMProcessor::~NAMProcessor() = default;
 
 bool NAMProcessor::loadModel(const ModelEntry& model)
 {
-    if (model.type != ModelType::NamOnly && model.type != ModelType::NamAndIr) {
+    if (model.type != ModelType::NamOnly) {
         return false;
     }
     

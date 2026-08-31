@@ -17,7 +17,7 @@ public:
     }
 
     bool loadModel(const ModelEntry& model) {
-        if ((model.type != ModelType::IrOnly && model.type != ModelType::NamAndIr) || model.ir_item_count > kMaxIrSamples) {
+        if (model.type != ModelType::IrOnly || model.ir_item_count > kMaxIrSamples) {
             return false;
         }
         const float* ir = reinterpret_cast<const float*>(model.ir_qspi_address);

@@ -124,7 +124,7 @@ int main() {
     // Find the first NAM model to test
     const ModelEntry* firstNam = nullptr;
     for (const ModelEntry& entry : desktopEntries) {
-        if (entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr) {
+        if (entry.type == ModelType::NamOnly) {
             firstNam = &entry;
             break;
         }
@@ -190,7 +190,7 @@ int main() {
 
     bool sawIr = false;
     for (int i = 0; i < MODEL_COUNT; ++i) {
-        if (desktopEntries[i].type == ModelType::IrOnly || desktopEntries[i].type == ModelType::NamAndIr) {
+        if (desktopEntries[i].type == ModelType::IrOnly) {
             sawIr = true;
             // The IR path might point to 0 in QSPI flash since we mocked the address rewriting
             // for test purposes. But let's just make sure it's valid if there is an IR byte count.

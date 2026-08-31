@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-enum class ModelType : uint8_t { NamOnly = 0, IrOnly = 1, NamAndIr = 2 };
+enum class ModelType : uint8_t { NamOnly = 0, IrOnly = 1 };
 
 struct ModelEntry {
     ModelType type;

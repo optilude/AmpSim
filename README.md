@@ -64,7 +64,9 @@ Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → 
 
 **Processing order rationale:**
 1. **Input Gain** - Optimizes signal level for the NAM model
-2. **NAM/IR engine** - Either A2 Lite amp modeling or cabinet IR, never both at once
+2. **NAM/IR engine** - Either A2 Lite amp modeling or cabinet IR, never both at
+   once; each costs most of an audio block, so chaining them leaves nothing for
+   the reverb
 3. **EQ** - Post-model tone shaping
 4. **Reverb** - Adds space and depth (mono input → stereo output)
 5. **Output Volume** - Final level control
@@ -252,6 +254,22 @@ make program
 3 channels, 23 layers, 1871 weights) and 48 kHz mono/stereo WAV cabinet IRs.
 Unsupported files fail the build. Up to 128 total captures are supported.
 
+Each file becomes one entry, named after its directory and filename. A `.nam`
+and a `.wav` sharing a name in the same directory used to be paired into a
+single "run the NAM through this cab" model; that is no longer supported and
+now **fails the build**, naming both files, rather than silently dropping one:
+
+```
+Running a NAM and a cabinet IR together is no longer supported.
+  'Marshall 1987x/Marshall 1987x' has both:
+    Models/Marshall 1987x/Marshall 1987x.nam
+    Models/Marshall 1987x/Marshall 1987x.wav
+Rename or remove one file from each pair.
+```
+
+Rename one of them if you want both available as separate, independently
+selectable models.
+
 ## Performance
 
 **Resource usage (current BOOT_SRAM build, will re-measure on hardware):**
@@ -379,7 +397,10 @@ After `make program`:
 2. **Mono input only** - Hardware limitation (stereo input not wired).
 3. **Brief mute during model changes** - Acceptable per design while weights are copied from QSPI and A2 state is reset.
 4. **Reverb always produces stereo output** - When reverb is ON, the two output channels differ; when OFF, both channels carry the same mono signal.
-5. **NAM and IR are mutually exclusive** - no NAM-into-cab-IR chain yet.
+5. **NAM and IR are mutually exclusive** - deliberate, not pending work. A NAM
+   capture and a cabinet IR each cost most of an audio block on their own;
+   chaining them leaves nothing for the reverb. The build refuses to produce a
+   paired model (see Installing New Models).
 6. **No presets** - Only one setting bank (future enhancement).
 7. **CPU/timing not yet measured on hardware.** All performance figures in this document should be re-verified once the board arrives.
 8. **Long-press "settings mode" not yet implemented** - see `docs/Scope.md`.

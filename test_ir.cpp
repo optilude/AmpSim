@@ -141,12 +141,12 @@ int main() {
 
     const ModelEntry* irEntry = nullptr;
     for (const ModelEntry& entry : entries) {
-        if (entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr) {
+        if (entry.type == ModelType::IrOnly) {
             irEntry = &entry;
             break;
         }
     }
-    if (!irEntry) return fail("no IrOnly or NamAndIr entry in capture index");
+    if (!irEntry) return fail("no IrOnly entry in capture index");
 
     std::vector<float> irFreq(IRProcessor::kMaxPartitions * ConvolutionEngine::N);
     std::vector<float> fdl(IRProcessor::kMaxPartitions * ConvolutionEngine::N);

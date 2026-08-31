@@ -1,5 +1,6 @@
 #include "Dattorro.hpp"
 #include <algorithm>
+#include <cmath>
 
 // float scale(float a, float inMin, float inMax, float outMin, float outMax) {
 //     return (a - inMin)/(inMax - inMin) * (outMax - outMin) + outMin;
@@ -302,7 +303,12 @@ void Dattorro1997Tank::rescaleApfAndDelayTimes() {
 
 void Dattorro1997Tank::rescaleTapTimes() {
     for (size_t i = 0; i < scaledOutputTaps.size(); ++i) {
-        scaledOutputTaps[i] = (int)((float)kOutputTaps[i] * sampleRateScale);
+        // Round rather than truncate. These are integer taps, so the residual
+        // is baked in at construction either way, but truncation biases every
+        // tap consistently short -- at the half-rate tank's 0.806 scale that
+        // is 0.5 to 0.8 samples (~33 us) on all seven, in the same direction.
+        // Rounding halves the worst case and removes the bias, for free.
+        scaledOutputTaps[i] = (int)lroundf((float)kOutputTaps[i] * sampleRateScale);
     }
 }
 

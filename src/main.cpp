@@ -240,10 +240,9 @@ void UpdateDisplay() {
 
     // Line 2: effect states.
     hw.display.SetCursor(0, 22);
-    snprintf(line, sizeof line, "MDL:%s REV:%s %s",
+    snprintf(line, sizeof line, "MDL:%s REV:%s",
              currentSettings->namEnabled ? "ON " : "OFF",
-             currentSettings->reverbEnabled ? "ON " : "OFF",
-             reverbProcessor.isHalfRate() ? "24k" : "48k");
+             currentSettings->reverbEnabled ? "ON " : "OFF");
     hw.display.WriteString(line, Font_6x8, true);
 
     // Line 3: I/O gain (compact so it fits: max "In:-20 Out:+20" = 14 chars).
@@ -413,16 +412,7 @@ void HandleEncoderMovement() {
 void HandleEncoderClick() {
     if (!hw.encoders[0].RisingEdge()) return;
 
-    if (!isPreviewingModel) {
-        // A click outside model browsing had no meaning, so it is the A/B
-        // switch for the reverb tank rate. Half rate costs 15% of the block
-        // against 29% and is what makes MDL + REV fit; this is here to judge
-        // by ear whether it costs anything worth 14 points.
-        reverbProcessor.toggleRate();
-        return;
-    }
-
-    {
+    if (isPreviewingModel) {
         // Snapshot the target before we clear the flag so that if the
         // timeout races with this callback we still load what the user saw.
         // Loading reads QSPI and paints the display, so hand it to the main
@@ -569,11 +559,6 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     //    number of blocks so the tail decays naturally. True bypass routes
     //    around the DSP entirely, so trails only apply while the model
     //    engine keeps the DSP path alive.
-    // Both tanks only fit in a block when the model engine is off; that is
-    // also the only configuration worth A/B-ing the reverb in, so it is where
-    // seamless switching is offered.
-    reverbProcessor.setCompareMode(!currentSettings->namEnabled);
-
     if (currentSettings->reverbEnabled || reverbTailBlocks > 0) {
         for (size_t i = 0; i < size; ++i) {
             float l, r;

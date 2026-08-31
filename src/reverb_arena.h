@@ -19,11 +19,11 @@
 
 #include <cstddef>
 
-// Two Dattorro engines are constructed (full-rate and half-rate, for the A/B
-// switch), and the half-rate one's delay lines are half the length, so the
-// pair needs about 1.5x what one full-rate engine did. SDRAM is 64 MB with
-// nothing else in it, so this is rounded up rather than trimmed to fit.
-constexpr size_t kReverbArenaFloats = 786432;  // 3 MiB / sizeof(float)
+// The tank runs at half the audio rate, so its delay lines are half the
+// length a full-rate one would need -- comfortably inside this 1 MiB. SDRAM
+// is 64 MB with nothing else in it, so this is left rounded up rather than
+// trimmed to fit.
+constexpr size_t kReverbArenaFloats = 262144;  // 1 MiB / sizeof(float)
 
 // Defined in reverb_arena.cpp with the .sdram_bss attribute.
 extern float g_reverb_arena[kReverbArenaFloats];

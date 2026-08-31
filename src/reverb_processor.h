@@ -14,13 +14,14 @@
 
 class ReverbProcessor {
 public:
-    // Construct both engines and apply the Flick/MuleBox preset to each.
+    // Construct the tank and apply the Flick/MuleBox preset.
     // Call this AFTER InterpDelayArena::set(...) so buffers land in SDRAM.
     //
-    // Two engines exist so the half-rate tank can be A/B'd against the full-
-    // rate one by ear, on the same signal, without a reflash. The half-rate
-    // one is the default: it costs 15% of the audio block against 29%, which
-    // is what makes NAM + reverb fit at all.
+    // The tank runs at half the audio rate: 15% of the audio block against
+    // 29%, which is what makes NAM + reverb fit at all. A/B'd by ear against
+    // a full-rate tank on the same signal; full rate does sound better, but
+    // not by enough to justify 14 points, and there is no path to finding
+    // them elsewhere (the remaining known reverb wins total 1-3).
     //
     // Why halving the tick rate is nearly free: the tank's cost is memory,
     // not arithmetic. Every sample it touches eight delay lines plus sixteen
@@ -34,13 +35,11 @@ public:
     // at the same value. The reverb path is band-limited to 2 kHz before the
     // tank sees it, nowhere near a 12 kHz Nyquist.
     void init(float sampleRate) {
-        half_ = std::make_unique<Dattorro>(sampleRate * 0.5f, 16.0f, 4.0f);
-        full_ = std::make_unique<Dattorro>(sampleRate, 16.0f, 4.0f);
-        ApplyPreset(*half_);
-        ApplyPreset(*full_);
+        tank_ = std::make_unique<Dattorro>(sampleRate * 0.5f, 16.0f, 4.0f);
+        ApplyPreset(*tank_);
     }
 
-    bool isReady() const { return half_ != nullptr && full_ != nullptr; }
+    bool isReady() const { return tank_ != nullptr; }
 
     // Process a single sample. `reverbIn` is the signal fed into the reverb tank.
     // `dryIn` is the dry source signal to be mixed with the wet reverb output.
@@ -55,57 +54,34 @@ public:
     // interpolation always runs between two ticks that have both happened.
     // Emitting the newest tick immediately and interpolating afterwards would
     // step forward and then back in time, which is audible as distortion.
-    //
-    // In compare mode both engines run so switching is seamless mid-tail --
-    // otherwise the newly selected one starts from a decayed state and there
-    // is nothing to compare. That costs both their budgets at once, so the
-    // caller only enables it when the model engine is off.
     void process(float reverbIn, float dryIn, float* outL, float* outR) {
-        if (!half_ || !full_) {
+        if (!tank_) {
             *outL = dryIn;
             *outR = dryIn;
             return;
         }
 
-        float halfL = 0.0f, halfR = 0.0f;
-        if (halfRate_ || compare_) {
-            if (!tickPhase_) {
-                const float decimated = inAcc_ * 0.5f;
-                half_->process(decimated, decimated);
-                prevL_ = curL_;
-                prevR_ = curR_;
-                curL_ = half_->getLeftOutput();
-                curR_ = half_->getRightOutput();
-                halfL = prevL_;
-                halfR = prevR_;
-                inAcc_ = reverbIn;
-            } else {
-                inAcc_ += reverbIn;
-                halfL = (prevL_ + curL_) * 0.5f;
-                halfR = (prevR_ + curR_) * 0.5f;
-            }
-            tickPhase_ = !tickPhase_;
+        float wetL, wetR;
+        if (!tickPhase_) {
+            const float decimated = inAcc_ * 0.5f;
+            tank_->process(decimated, decimated);
+            prevL_ = curL_;
+            prevR_ = curR_;
+            curL_ = tank_->getLeftOutput();
+            curR_ = tank_->getRightOutput();
+            wetL = prevL_;
+            wetR = prevR_;
+            inAcc_ = reverbIn;
+        } else {
+            inAcc_ += reverbIn;
+            wetL = (prevL_ + curL_) * 0.5f;
+            wetR = (prevR_ + curR_) * 0.5f;
         }
+        tickPhase_ = !tickPhase_;
 
-        float fullL = 0.0f, fullR = 0.0f;
-        if (!halfRate_ || compare_) {
-            full_->process(reverbIn, reverbIn);
-            fullL = full_->getLeftOutput();
-            fullR = full_->getRightOutput();
-        }
-
-        const float wetL = halfRate_ ? halfL : fullL;
-        const float wetR = halfRate_ ? halfR : fullR;
         *outL = dryIn * dryMix_ + wetL * wetMix_;
         *outR = dryIn * dryMix_ + wetR * wetMix_;
     }
-
-    // Run both engines so the A/B switch is seamless. Only affordable with
-    // the model engine off: 15% + 29% of the block instead of one or other.
-    void setCompareMode(bool on) { compare_ = on; }
-
-    bool isHalfRate() const { return halfRate_; }
-    void toggleRate() { halfRate_ = !halfRate_; }
 
     // Standard Guitar Pedal Mix: Dry stays at unity (1.0), wet increases from 0 to 1.
     void setMix(float mix) {
@@ -116,30 +92,25 @@ public:
     }
 
     void setDecay(float decay) {
-        if (half_) half_->setDecay(decay);
-        if (full_) full_->setDecay(decay);
+        if (tank_) tank_->setDecay(decay);
     }
 
     void setTone(float tone) {
         // Map 0-1 to a pitch value for the tank high cut (in "pitch" units).
         const float pitch = 2.87f + tone * 4.38f;  // 2.87 .. 7.25
-        if (half_) half_->setTankFilterHighCutFrequency(pitch);
-        if (full_) full_->setTankFilterHighCutFrequency(pitch);
+        if (tank_) tank_->setTankFilterHighCutFrequency(pitch);
     }
 
     void setModSpeed(float speed) {
-        if (half_) half_->setTankModSpeed(speed);
-        if (full_) full_->setTankModSpeed(speed);
+        if (tank_) tank_->setTankModSpeed(speed);
     }
 
     void setModDepth(float depth) {
-        if (half_) half_->setTankModDepth(depth);
-        if (full_) full_->setTankModDepth(depth);
+        if (tank_) tank_->setTankModDepth(depth);
     }
 
     void clear() {
-        if (half_) half_->clear();
-        if (full_) full_->clear();
+        if (tank_) tank_->clear();
         // The half-rate interpolator holds two ticks of output. Leaving them
         // behind would let the old tail bleed through the first samples after
         // a model change or a fault recovery.
@@ -174,10 +145,7 @@ private:
         d.setTankModShape(0.25f);
     }
 
-    std::unique_ptr<Dattorro> half_;
-    std::unique_ptr<Dattorro> full_;
-    bool halfRate_ = true;
-    bool compare_ = false;
+    std::unique_ptr<Dattorro> tank_;
     float dryMix_ = 0.7f;
     float wetMix_ = 0.3f;
 

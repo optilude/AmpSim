@@ -264,13 +264,16 @@ void UpdateDisplay() {
 }
 
 // Show a fullscreen message. Used for load progress and error surfaces.
-static void ShowMessage(const char* line0, const char* line1 = nullptr) {
+static void ShowMessage(const char* line0, const char* line1 = nullptr,
+                        const char* line2 = nullptr, const char* line3 = nullptr) {
     hw.display.Fill(false);
     hw.display.SetCursor(0, 0);
     hw.display.WriteString(line0, Font_7x10, true);
-    if (line1) {
-        hw.display.SetCursor(0, 14);
-        hw.display.WriteString(line1, Font_6x8, true);
+    const char* rest[3] = {line1, line2, line3};
+    for (int i = 0; i < 3; ++i) {
+        if (!rest[i]) continue;
+        hw.display.SetCursor(0, 14 + i * 10);
+        hw.display.WriteString(rest[i], Font_6x8, true);
     }
     hw.display.Update();
 }
@@ -309,7 +312,17 @@ void LoadModel(int index) {
     // it is just the wrong data, or unwritten flash (0xFF == NaN). Catch it here
     // rather than letting NaN propagate into the EQ and reverb state.
     if (!capture::VerifyEntry(entry)) {
-        ShowMessage("Bad model data", "reflash: make program");
+        // Show the numbers, not just the verdict. A mismatch means the blob in
+        // QSPI is not the one this build was compiled against -- almost always
+        // a stale flash -- and the address plus the two CRCs is enough to tell
+        // that apart from genuinely corrupt data without attaching a probe.
+        const uintptr_t addr = entry.nam_qspi_address ? entry.nam_qspi_address
+                                                      : entry.ir_qspi_address;
+        char l1[32], l2[32], l3[32];
+        snprintf(l1, sizeof l1, "at %08lx", (unsigned long)addr);
+        snprintf(l2, sizeof l2, "got %08lx", (unsigned long)capture::ComputeEntryCrc(entry));
+        snprintf(l3, sizeof l3, "want %08lx", (unsigned long)entry.crc32);
+        ShowMessage("Bad model data", l1, l2, l3);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
         return;
     }

@@ -62,9 +62,14 @@ CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 
 # Static A2 Lite runtime is exception-free and allocation-free in audio.
 
-# Override libDaisy's `program` target to flash firmware directly to QSPI
-# via the STLINK debug probe.
-.PHONY: program program-boot-probe captures
+# Override libDaisy's `program` and `program-dfu` targets so both flash the
+# COMBINED image. libDaisy's program-dfu writes $(TARGET_BIN) -- the app alone
+# -- which leaves whatever capture blob was last written in QSPI. Once the
+# layout changes, the firmware reads the old blob at the new offset, every
+# model fails its CRC check and the pedal reports "Bad model data". There is no
+# reason to ever flash the app without the blob it was built against, so the
+# app-only target is not offered at all.
+.PHONY: program program-dfu program-boot-probe captures combined
 
 captures: tools/build_capture_blob.py
 	@echo "Rebuilding capture blob..."
@@ -73,9 +78,15 @@ captures: tools/build_capture_blob.py
 
 $(OBJECTS): captures
 
-program: all captures
+combined: all captures
 	@echo "Creating combined firmware + capture blob..."
 	python3 tools/make_combined_image.py --app $(BUILD_DIR)/$(TARGET_BIN) --captures build/capture_data.bin --out build/combined.bin
+
+program-dfu: combined
+	@echo "Flashing combined firmware to QSPI over DFU..."
+	dfu-util -a 0 -s $(FLASH_ADDRESS):leave -D build/combined.bin -d ,0483:$(USBPID)
+
+program: combined
 	@echo "Flashing combined firmware to QSPI..."
 	$(OCD) -s $(OCD_DIR) \
 		-f $(PGM_DEVICE) \

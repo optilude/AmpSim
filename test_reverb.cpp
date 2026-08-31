@@ -82,11 +82,13 @@ int main() {
     }
     printf("[PASS] Silent input eventually decays\n");
 
-    // 5) At mix=0.5 with a steady-state 1.0 dry input, the dry contribution
-    //    to the output should be exactly 0.5 (the wet contribution adds a
-    //    slowly-varying reverb signal on top). We check that the dry math
-    //    is applied by comparing mix=1.0 vs mix=0.5 outputs — the difference
-    //    should be exactly 0.5 * dry on average.
+    // 5) The mix law is a squared-taper crossfade (see ReverbProcessor::setMix):
+    //    for knob k, m = k*k and out = (1-m)*dry + m*wet. Measure the pure wet
+    //    signal at k=1 (where dry has faded out entirely), then check that an
+    //    intermediate knob position lands where the law says it should.
+    //    k=0.5 gives m=0.25, so the output is 0.75*dry + 0.25*wet. If the
+    //    squaring were dropped this would read 0.5/0.5 and fail, which is the
+    //    point: the taper is what keeps the bottom of the sweep usable.
     rp.clear();
     rp.setMix(1.0f);
     float wetOnly = 0.0f;
@@ -101,13 +103,14 @@ int main() {
         rp.process(1.0f, 1.0f, &l, &r);
         halfMix = l;
     }
-    const float expectedDryContribution = 0.5f * 1.0f + 0.5f * wetOnly;
-    if (std::fabs(halfMix - expectedDryContribution) > 0.02f) {
+    const float m = 0.5f * 0.5f;
+    const float expected = (1.0f - m) * 1.0f + m * wetOnly;
+    if (std::fabs(halfMix - expected) > 0.02f) {
         printf("wetOnly=%.4f halfMix=%.4f expected~%.4f\n",
-               wetOnly, halfMix, expectedDryContribution);
-        return fail("mix=0.5 must be 0.5*dry + 0.5*wet");
+               wetOnly, halfMix, expected);
+        return fail("knob=0.5 must give 0.75*dry + 0.25*wet (squared taper)");
     }
-    printf("[PASS] mix=0.5 is 0.5*dry + 0.5*wet within tolerance\n");
+    printf("[PASS] knob=0.5 gives 0.75*dry + 0.25*wet (squared taper)\n");
 
     printf("\nAll reverb tests passed.\n");
     return 0;

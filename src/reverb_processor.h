@@ -83,12 +83,29 @@ public:
         *outR = dryIn * dryMix_ + wetR * wetMix_;
     }
 
-    // Standard Guitar Pedal Mix: Dry stays at unity (1.0), wet increases from 0 to 1.
+    // Crossfade dry against wet on a squared knob taper, matching MuleBox.
+    //
+    // This used to be a linear wet with dry pinned at unity, which put the
+    // knob about 9.7 dB hotter than MuleBox at the same position: at 3/10 it
+    // gave wet/dry 0.30/1.0 where MuleBox gives 0.09/0.91. Squaring is what
+    // buys the usable sweep -- it approximates an audio-taper pot, so the
+    // bottom third of the travel stays genuinely subtle instead of arriving
+    // all at once.
+    //
+    // Squaring also fixes audible reverb at knob zero without needing a
+    // deadband. The pot bottoms out at a small ADC offset rather than a true
+    // zero; linear, an offset of 0.03 is -30 dB of wet, which a long tail
+    // makes audible in a quiet room. Squared it is -60 dB, which is not.
+    //
+    // Dry falls as wet rises rather than staying at unity, so the total level
+    // holds roughly steady across the sweep instead of climbing. The cost is
+    // that fully clockwise is 100% wet with no dry at all.
     void setMix(float mix) {
         if (mix < 0.0f) mix = 0.0f;
         if (mix > 1.0f) mix = 1.0f;
-        wetMix_ = mix;
-        dryMix_ = 1.0f;
+        const float m = mix * mix;
+        wetMix_ = m;
+        dryMix_ = 1.0f - m;
     }
 
     void setDecay(float decay) {

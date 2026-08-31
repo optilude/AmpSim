@@ -10,7 +10,11 @@ constexpr float EQ_PROCESS_THRESHOLD = 0.05f;
 
 // Timing constants
 constexpr uint32_t PREVIEW_TIMEOUT_MS = 10000;
-constexpr uint32_t SAVE_DELAY_MS = 2000;
+// Coalesces rapid successive setting changes into one flash write. Short on
+// purpose: a footswitch toggle right before the user pulls the power cable
+// needs to have already landed in flash, and a couple hundred ms is still
+// far longer than any real sequence of button presses.
+constexpr uint32_t SAVE_DELAY_MS = 250;
 // True-bypass relay sequencing, counted in samples from the audio callback
 // rather than slept through on the main loop. On an effect toggle the analog
 // mute engages immediately, the relay flips once the output is quiet, and the
@@ -20,6 +24,10 @@ constexpr float BYPASS_TOGGLE_TRANSITION_S = 0.010f;  // relay flips at 10 ms
 constexpr float MUTE_OFF_TRANSITION_S = 0.020f;       // unmute at 20 ms
 constexpr uint32_t DISPLAY_UPDATE_INTERVAL_MS = 33;  // ~30 FPS
 constexpr uint32_t ERROR_DISPLAY_TIME_MS = 5000;  // 5 seconds
+constexpr uint32_t ENCODER_LONG_PRESS_MS = 700;  // hold to enter/exit settings
+// How long the knob-value overlay stays up after the last knob movement
+// before the display reverts to the model/variant screen.
+constexpr uint32_t KNOB_DISPLAY_TIMEOUT_MS = 1000;
 
 // Knob ranges
 constexpr float GAIN_RANGE_DB = 20.0f;   // ±20dB for input/output

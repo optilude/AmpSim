@@ -68,8 +68,9 @@ uint32_t previewStartTime = 0;
 // Display update throttling.
 uint32_t lastDisplayUpdate = 0;
 
-// Debounced settings save. Save() is currently a no-op under BOOT_QSPI, but
-// keeping the dirty tracking localizes the future persistence hook.
+// Debounced settings save: SaveSettingsDebounced() marks this dirty, and
+// CheckSettingsSave() in the main loop flushes it to QSPI once SAVE_DELAY_MS
+// has passed with no further changes.
 uint32_t lastSettingsChange = 0;
 bool settingsDirty = false;
 
@@ -87,6 +88,88 @@ int32_t muteOffTransitionSamples = 0;
 // Set by the audio callback when the encoder is clicked. Loading a model reads
 // QSPI and paints the display, so it has to happen on the main loop.
 volatile int pendingLoadIndex = -1;
+
+void SaveSettingsDebounced();
+
+// ---------------------------------------------------------------------------
+// Settings mode
+//
+// A long-press on the encoder takes over the whole screen and suspends audio.
+// SettingsMenu scrolls between items; SettingsEdit scrolls between an item's
+// options. A second click in SettingsEdit commits the value and returns to
+// SettingsMenu. Reset is modeled as a two-option item (Cancel/Confirm) so it
+// goes through the same click-to-edit / click-to-commit flow as a real
+// setting, rather than firing on a single click.
+// ---------------------------------------------------------------------------
+enum class UiMode { Normal, SettingsMenu, SettingsEdit };
+enum BufferedBypassMode { BypassRelay = 0, BypassDirect = 1, BypassMonoToStereo = 2 };
+
+volatile UiMode uiMode = UiMode::Normal;
+static inline bool InSettingsMode() { return uiMode != UiMode::Normal; }
+
+int settingsCursor = 0;                  // menu item under the cursor
+int settingsEditValue = 0;               // candidate value while in SettingsEdit
+bool encoderLongPressFired = false;      // latch so long-press fires once per hold
+volatile bool pendingReset = false;      // main loop performs the reboot
+
+static const char* const kMonoOutOptions[] = {"Off", "On"};
+static const char* const kBypassOptions[] = {"True", "Direct", "Mono>Str"};
+static const char* const kResetOptions[] = {"Cancel", "Confirm"};
+
+struct SettingsMenuItem {
+    const char* name;
+    const char* const* options;   // nullptr => immediate action on click (Back only)
+    uint8_t optionCount;
+};
+
+static const SettingsMenuItem kSettingsMenu[] = {
+    {"Mono out", kMonoOutOptions, 2},
+    {"Bypass",   kBypassOptions,  3},
+    {"Reset",    kResetOptions,   2},
+    {"Back",     nullptr,         0},
+};
+static constexpr int kSettingsMenuCount = sizeof(kSettingsMenu) / sizeof(kSettingsMenu[0]);
+
+// Current stored value for a menu item, as an option index.
+static int GetMenuItemValue(int item) {
+    switch (item) {
+        case 0: return currentSettings->monoOutput ? 1 : 0;
+        case 1: return currentSettings->bufferedBypassMode;
+        case 2: return 1;  // Reset defaults to Confirm: click, click resets
+        default: return 0;
+    }
+}
+
+// Commit an edited option index back into settings/state.
+static void CommitMenuItemValue(int item, int value) {
+    switch (item) {
+        case 0:
+            currentSettings->monoOutput = (uint8_t)value;
+            SaveSettingsDebounced();
+            break;
+        case 1:
+            currentSettings->bufferedBypassMode = (uint8_t)value;
+            SaveSettingsDebounced();
+            break;
+        case 2:
+            if (value == 1) pendingReset = true;
+            break;
+        default:
+            break;
+    }
+}
+
+static void EnterSettingsMode() {
+    // Cancel any in-flight preview/load so it cannot paint over the menu.
+    isPreviewingModel = false;
+    pendingLoadIndex = -1;
+    settingsCursor = 0;
+    uiMode = UiMode::SettingsMenu;
+}
+
+static void ExitSettingsMode() {
+    uiMode = UiMode::Normal;
+}
 
 // Audio callback timing. The heaviest chain (NAM + EQ + reverb) is close to
 // the per-block budget, so the load is measured and surfaced on the display.
@@ -131,6 +214,13 @@ float currentBassKnob = 0.5f;
 float currentMidKnob = 0.5f;
 float currentTrebleKnob = 0.5f;
 
+// Which knob (if any) was most recently turned, and when. The display uses
+// this to show a transient name/value overlay instead of the model screen;
+// see UpdateDisplay().
+enum class ActiveKnob { None, InputGain, OutputVolume, ReverbMix, Bass, Mid, Treble };
+ActiveKnob lastActiveKnob = ActiveKnob::None;
+uint32_t lastKnobActivityMs = 0;
+
 // Audio block size. 48 matches the NAM A2 inference block exactly (one
 // inference per callback, flat load instead of the 2-or-3 the old 128 gave)
 // and puts the control/LED update rate at 1 kHz, which is what libDaisy's
@@ -164,8 +254,14 @@ void SaveSettingsDebounced() {
 // Both effects OFF => relay engaged (analog pass-through), otherwise the DSP
 // is in circuit. Called once per audio block; when the decision changes it
 // arms the mute/relay sequence that RunBypassTimingForSample steps through.
+// The buffered bypass modes (Direct / Mono-to-Stereo) keep the relay
+// permanently disengaged -- that is the point of them, signal always runs
+// through the codec. Settings mode forces the relay disengaged too, so the
+// DSP-silence fast path is what actually mutes the output there.
 static inline void UpdateBypassRelay() {
-    const bool shouldBypass = !currentSettings->namEnabled
+    const bool shouldBypass = currentSettings->bufferedBypassMode == BypassRelay
+                           && !InSettingsMode()
+                           && !currentSettings->namEnabled
                            && !currentSettings->reverbEnabled;
 
     if (shouldBypass == currentBypassState) return;
@@ -193,9 +289,17 @@ static inline void StepBypassTiming(int32_t samples) {
 // ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
-// 128x64 SSD1306. Font_6x8 => max 21 chars per line; Font_7x10 => max 18.
-// Text longer than that is truncated by the OLED driver, not our concern
-// beyond aesthetics — we still snprintf-clip our own buffers.
+// 128x64 SSD1306. Font_6x8 => max 21 chars per line; Font_7x10 => max 18;
+// Font_11x18 => max 11 chars. Text longer than that is truncated by the OLED
+// driver, not our concern beyond aesthetics — we still snprintf-clip our own
+// buffers.
+//
+// Normal display is deliberately sparse: everything a knob position or an LED
+// already tells the player (gain, EQ, effect on/off) is left off the screen.
+// The main area shows the model and variant; turning a knob temporarily
+// replaces that with its name and value (see ActiveKnob / UpdateDisplay), and
+// a one-line status bar at the bottom carries CPU load plus which of
+// IR/NAM/REV are actually in circuit.
 
 // A CpuLoadMeter reading as a percent, clamped to three digits so it cannot
 // push the rest of the line off the display. NaN is what the meter holds
@@ -206,81 +310,210 @@ static int LoadPercent(float load) {
     return pct > 999 ? 999 : pct;
 }
 
-void UpdateDisplay() {
+// Font_11x18 fits 11 whole characters per 128px line (12 would need 132px);
+// see ClipForDisplay.
+static constexpr size_t kBigFontChars = 11;
+// Font_7x10 fits 18 whole characters per 128px line (19 would need 133px).
+// Used while previewing a model on the encoder: that's exactly when the
+// player is comparing similar names, so trading the bigger font for less
+// truncation is worth it.
+static constexpr size_t kSmallFontChars = 18;
+
+// Clips src to at most maxChars characters, marking a real cut with a
+// trailing '~' so a shortened model/variant name reads as shortened rather
+// than as a different, shorter one. Without this the OLED driver's own
+// per-character bounds check silently drops whatever doesn't fit.
+static void ClipForDisplay(char* dst, size_t dstSize, const char* src, size_t maxChars) {
+    const size_t limit = std::min(maxChars, dstSize - 1);
+    if (strlen(src) <= limit) {
+        snprintf(dst, dstSize, "%s", src);
+        return;
+    }
+    snprintf(dst, dstSize, "%.*s", (int)limit, src);
+    if (limit > 0) dst[limit - 1] = '~';
+}
+
+// Right-edge-aligned WriteString: draws str so its last character lands on
+// the display's right edge instead of growing rightward from the cursor.
+static void WriteStringRightAligned(const char* str, FontDef font, int y) {
+    const int w = (int)(strlen(str) * font.FontWidth);
+    const int x = std::max(0, (int)hw.display.Width() - w);
+    hw.display.SetCursor(x, y);
+    hw.display.WriteString(str, font, true);
+}
+
+// Name/value strings for the knob currently shown in the overlay. Both
+// buffers are expected to be at least 12 bytes (11 chars + NUL, Font_11x18's
+// limit).
+static void GetKnobDisplayText(ActiveKnob knob, char* nameBuf, size_t nameLen,
+                               char* valueBuf, size_t valueLen) {
+    switch (knob) {
+        case ActiveKnob::InputGain:
+            snprintf(nameBuf, nameLen, "In Gain");
+            snprintf(valueBuf, valueLen, "%+d dB",
+                     (int)std::lround(KnobToNormalized(currentInputGainKnob) * GAIN_RANGE_DB));
+            break;
+        case ActiveKnob::OutputVolume:
+            snprintf(nameBuf, nameLen, "Out Vol");
+            snprintf(valueBuf, valueLen, "%+d dB",
+                     (int)std::lround(KnobToNormalized(currentOutputVolumeKnob) * GAIN_RANGE_DB));
+            break;
+        case ActiveKnob::ReverbMix:
+            snprintf(nameBuf, nameLen, "Reverb");
+            snprintf(valueBuf, valueLen, "%d%%", (int)std::lround(currentReverbMixKnob * 100.0f));
+            break;
+        case ActiveKnob::Bass:
+            snprintf(nameBuf, nameLen, "Bass");
+            snprintf(valueBuf, valueLen, "%+d dB",
+                     (int)std::lround(KnobToNormalized(currentBassKnob) * EQ_RANGE_DB));
+            break;
+        case ActiveKnob::Mid:
+            snprintf(nameBuf, nameLen, "Mid");
+            snprintf(valueBuf, valueLen, "%+d dB",
+                     (int)std::lround(KnobToNormalized(currentMidKnob) * EQ_RANGE_DB));
+            break;
+        case ActiveKnob::Treble:
+            snprintf(nameBuf, nameLen, "Treble");
+            snprintf(valueBuf, valueLen, "%+d dB",
+                     (int)std::lround(KnobToNormalized(currentTrebleKnob) * EQ_RANGE_DB));
+            break;
+        case ActiveKnob::None:
+            nameBuf[0] = '\0';
+            valueBuf[0] = '\0';
+            break;
+    }
+}
+
+// Full-screen settings menu/edit paint. Follows the same Fill/SetCursor/
+// WriteString/Update idiom as UpdateDisplay() below.
+static void DrawSettingsScreen() {
     hw.display.Fill(false);
 
     char line[32];
 
-    const int shownIndex = isPreviewingModel ? previewModelIndex : currentSettings->modelIndex;
-    const bool haveModels = (MODEL_COUNT > 0) && shownIndex >= 0 && shownIndex < MODEL_COUNT;
-
-    // Line 0: model name (with preview arrow if browsing).
     hw.display.SetCursor(0, 0);
-    if (haveModels) {
-        snprintf(line, sizeof line, "%s%s",
-                 isPreviewingModel ? "> " : "",
-                 model_entries[shownIndex].model_name);
-    } else {
-        snprintf(line, sizeof line, "No models");
-    }
-    hw.display.WriteString(line, Font_7x10, true);
+    hw.display.WriteString("SETTINGS", Font_7x10, true);
 
-    // Line 1: variant and type.
-    hw.display.SetCursor(0, 12);
-    if (haveModels) {
-        const char* typeStr = "";
-        switch (model_entries[shownIndex].type) {
-            case ModelType::NamOnly: typeStr = "[NAM]"; break;
-            case ModelType::IrOnly: typeStr = "[IR]"; break;
+    for (int i = 0; i < kSettingsMenuCount; ++i) {
+        const SettingsMenuItem& item = kSettingsMenu[i];
+        const bool onCursor = (i == settingsCursor);
+        const bool editingThis = onCursor && uiMode == UiMode::SettingsEdit;
+
+        char valueBuf[16] = "";
+        if (item.options != nullptr) {
+            const int value = editingThis ? settingsEditValue : GetMenuItemValue(i);
+            if (editingThis) {
+                snprintf(valueBuf, sizeof valueBuf, "[%s]", item.options[value]);
+            } else {
+                snprintf(valueBuf, sizeof valueBuf, "%s", item.options[value]);
+            }
         }
-        snprintf(line, sizeof line, "%.15s %s", model_entries[shownIndex].variant_name, typeStr);
-    } else {
-        snprintf(line, sizeof line, "(regenerate models)");
+
+        hw.display.SetCursor(0, 14 + i * 10);
+        snprintf(line, sizeof line, "%c%-9s %10s",
+                 onCursor ? '>' : ' ', item.name, valueBuf);
+        hw.display.WriteString(line, Font_6x8, true);
     }
-    hw.display.WriteString(line, Font_6x8, true);
 
-    // Line 2: effect states.
-    hw.display.SetCursor(0, 22);
-    snprintf(line, sizeof line, "MDL:%s REV:%s",
-             currentSettings->namEnabled ? "ON " : "OFF",
-             currentSettings->reverbEnabled ? "ON " : "OFF");
-    hw.display.WriteString(line, Font_6x8, true);
+    hw.display.Update();
+}
 
-    // Line 3: I/O gain (compact so it fits: max "In:-20 Out:+20" = 14 chars).
-    // Read from the knobs, not the gain stages: those only advance on the
-    // audio thread, which is skipped entirely in true bypass.
-    hw.display.SetCursor(0, 32);
-    const int inDb = (int)std::lround(KnobToNormalized(currentInputGainKnob) * GAIN_RANGE_DB);
-    const int outDb = (int)std::lround(KnobToNormalized(currentOutputVolumeKnob) * GAIN_RANGE_DB);
-    snprintf(line, sizeof line, "In:%+3d Out:%+3d dB", inDb, outDb);
-    hw.display.WriteString(line, Font_6x8, true);
+void UpdateDisplay() {
+    if (InSettingsMode()) { DrawSettingsScreen(); return; }
 
-    // Line 4: reverb mix + EQ. Keep it under 21 chars for Font_6x8.
-    hw.display.SetCursor(0, 42);
-    const int revPct = (int)std::lround(currentReverbMixKnob * 100.0f);
-    const int bassDb = (int)std::lround(KnobToNormalized(currentBassKnob) * EQ_RANGE_DB);
-    const int midDb = (int)std::lround(KnobToNormalized(currentMidKnob) * EQ_RANGE_DB);
-    const int trebDb = (int)std::lround(KnobToNormalized(currentTrebleKnob) * EQ_RANGE_DB);
-    snprintf(line, sizeof line, "R%3d B%+3d M%+3d T%+3d", revPct, bassDb, midDb, trebDb);
-    hw.display.WriteString(line, Font_6x8, true);
+    hw.display.Fill(false);
 
-    // Line 5: context-sensitive help.
-    hw.display.SetCursor(0, 52);
-    if (isPreviewingModel) {
-        hw.display.WriteString("Click to load", Font_6x8, true);
-    } else if (dspFaultLatched) {
-        hw.display.WriteString("Model NaN: MDL off", Font_6x8, true);
-    } else if (cpuOverloadTripped) {
+    char line[32];
+
+    // Main area: the knob overlay wins over the model/variant screen for
+    // KNOB_DISPLAY_TIMEOUT_MS after the last knob movement, then yields back.
+    const uint32_t now = daisy::System::GetNow();
+    const bool knobActive = lastActiveKnob != ActiveKnob::None
+                          && (now - lastKnobActivityMs) < KNOB_DISPLAY_TIMEOUT_MS;
+
+    if (knobActive) {
+        char name[12], value[12];
+        GetKnobDisplayText(lastActiveKnob, name, sizeof name, value, sizeof value);
+        hw.display.SetCursor(0, 0);
+        hw.display.WriteString(name, Font_11x18, true);
+        hw.display.SetCursor(0, 20);
+        hw.display.WriteString(value, Font_11x18, true);
+    } else {
+        const int shownIndex = isPreviewingModel ? previewModelIndex : currentSettings->modelIndex;
+        const bool haveModels = (MODEL_COUNT > 0) && shownIndex >= 0 && shownIndex < MODEL_COUNT;
+
+        // Line 0: model name (with preview arrow if browsing). Confirmed
+        // selections get the big font, same as the knob overlay; while
+        // previewing (still scrolling the encoder, before the click that
+        // confirms) it drops to the smaller font so more of the name is
+        // visible -- exactly when the player is comparing similar-looking
+        // names. Either way, names longer than the font's width are clipped
+        // with a trailing '~' rather than silently cut off by the display
+        // driver's own per-character bounds check -- a clipped name should
+        // read as clipped, not as a different, shorter name.
+        const FontDef& font = isPreviewingModel ? Font_7x10 : Font_11x18;
+        const size_t maxChars = isPreviewingModel ? kSmallFontChars : kBigFontChars;
+        const int line1Y = isPreviewingModel ? 14 : 20;
+
+        char clipped[kSmallFontChars + 1];
+        hw.display.SetCursor(0, 0);
+        if (haveModels) {
+            const char* prefix = isPreviewingModel ? "> " : "";
+            ClipForDisplay(clipped, sizeof clipped, model_entries[shownIndex].model_name,
+                           maxChars - strlen(prefix));
+            snprintf(line, sizeof line, "%s%s", prefix, clipped);
+        } else {
+            snprintf(line, sizeof line, "No models");
+        }
+        hw.display.WriteString(line, font, true);
+
+        // Line 1: variant name. The model type ([NAM]/[IR]) is left off --
+        // that's what the IR/NAM status-bar indicator is for.
+        hw.display.SetCursor(0, line1Y);
+        ClipForDisplay(line, sizeof line,
+                       haveModels ? model_entries[shownIndex].variant_name : "regenerate",
+                       maxChars);
+        hw.display.WriteString(line, font, true);
+    }
+
+    // Status bar: one line at the bottom, always visible outside settings
+    // mode. Priority: safety states first, then the transient preview hint,
+    // then the steady-state CPU/effect readout (indicators left, CPU meter
+    // right-aligned).
+    if (cpuOverloadTripped) {
         // The numbers matter: "97/104" is a chain that needs trimming,
         // "180/240" is one that needs rethinking.
         snprintf(line, sizeof line, "OVL%3d/%3d%% FS1 retry",
                  LoadPercent(overloadAvgAtTrip), LoadPercent(overloadMaxAtTrip));
+        hw.display.SetCursor(0, 54);
         hw.display.WriteString(line, Font_6x8, true);
+    } else if (dspFaultLatched) {
+        hw.display.SetCursor(0, 54);
+        hw.display.WriteString("FAULT: model off", Font_6x8, true);
+    } else if (isPreviewingModel) {
+        hw.display.SetCursor(0, 54);
+        hw.display.WriteString("Click to load", Font_6x8, true);
     } else {
-        snprintf(line, sizeof line, "CPU%3d/%3d%% F1:M F2:R",
-                 LoadPercent(loadMeter.GetAvgCpuLoad()),
-                 LoadPercent(loadMeter.GetMaxCpuLoad()));
+        const bool haveModels = (MODEL_COUNT > 0) && currentSettings->modelIndex >= 0
+                              && currentSettings->modelIndex < MODEL_COUNT;
+        const bool modelActive = currentSettings->namEnabled && haveModels;
+        const bool irActive = modelActive
+                            && model_entries[currentSettings->modelIndex].type == ModelType::IrOnly;
+        const bool namActive = modelActive
+                             && model_entries[currentSettings->modelIndex].type == ModelType::NamOnly;
+
+        int off = 0;
+        line[0] = '\0';
+        if (namActive) off += snprintf(line + off, sizeof(line) - off, "NAM ");
+        if (irActive) off += snprintf(line + off, sizeof(line) - off, "IR ");
+        if (currentSettings->reverbEnabled) off += snprintf(line + off, sizeof(line) - off, "REV ");
+        if (off > 0) line[off - 1] = '\0';  // drop the trailing separator space
+        hw.display.SetCursor(0, 54);
         hw.display.WriteString(line, Font_6x8, true);
+
+        char cpuStr[16];
+        snprintf(cpuStr, sizeof cpuStr, "CPU%3d%%", LoadPercent(loadMeter.GetAvgCpuLoad()));
+        WriteStringRightAligned(cpuStr, Font_6x8, 54);
     }
 
     hw.display.Update();
@@ -319,15 +552,7 @@ void LoadModel(int index) {
     }
 
     const ModelEntry& entry = model_entries[index];
-    char typeLine[32];
-    const char* typeStr = "";
-    switch (entry.type) {
-        case ModelType::NamOnly: typeStr = "[NAM]"; break;
-        case ModelType::IrOnly: typeStr = "[IR]"; break;
-    }
-    snprintf(typeLine, sizeof typeLine, "%s %s", entry.variant_name, typeStr);
-
-    ShowMessage("Loading...", typeLine);
+    ShowMessage("Loading...", entry.variant_name);
 
     // The capture blob is read straight out of memory-mapped QSPI at an address
     // baked in at build time. If that address is wrong the data still reads —
@@ -392,31 +617,84 @@ void LoadModel(int index) {
 // The rules for this section: no display writes, no blocking, no QSPI. Work
 // that needs any of those sets a flag for the main loop instead.
 // ---------------------------------------------------------------------------
-void HandleEncoderMovement() {
-    if (MODEL_COUNT == 0) return;
+// Handles the encoder's rotation and click, dispatched on the current UI
+// mode. A long-press toggles settings mode; the matching release is latched
+// out so it is not also read as a click.
+//
+// Model loading now commits on button release rather than press: a
+// press-triggered click would fire before the long-press threshold could be
+// reached. Imperceptible in use.
+void HandleEncoder() {
+    if (hw.encoders[0].Pressed() && !encoderLongPressFired
+        && hw.encoders[0].TimeHeldMs() >= ENCODER_LONG_PRESS_MS) {
+        encoderLongPressFired = true;
+        if (InSettingsMode()) ExitSettingsMode(); else EnterSettingsMode();
+    }
+
+    bool click = false;
+    if (hw.encoders[0].FallingEdge()) {
+        click = !encoderLongPressFired;
+        encoderLongPressFired = false;
+    }
 
     const int32_t inc = hw.encoders[0].Increment();
-    if (inc == 0) return;
 
-    int newIndex = previewModelIndex + inc;
-    if (newIndex < 0) newIndex = MODEL_COUNT - 1;
-    if (newIndex >= MODEL_COUNT) newIndex = 0;
+    switch (uiMode) {
+        case UiMode::Normal: {
+            if (MODEL_COUNT == 0) break;
+            if (inc != 0) {
+                int newIndex = previewModelIndex + inc;
+                if (newIndex < 0) newIndex = MODEL_COUNT - 1;
+                if (newIndex >= MODEL_COUNT) newIndex = 0;
 
-    previewModelIndex = newIndex;
-    isPreviewingModel = true;
-    previewStartTime = daisy::System::GetNow();
-}
-
-void HandleEncoderClick() {
-    if (!hw.encoders[0].RisingEdge()) return;
-
-    if (isPreviewingModel) {
-        // Snapshot the target before we clear the flag so that if the
-        // timeout races with this callback we still load what the user saw.
-        // Loading reads QSPI and paints the display, so hand it to the main
-        // loop rather than doing it here.
-        pendingLoadIndex = previewModelIndex;
-        isPreviewingModel = false;
+                previewModelIndex = newIndex;
+                isPreviewingModel = true;
+                previewStartTime = daisy::System::GetNow();
+            }
+            if (click && isPreviewingModel) {
+                // Snapshot the target before we clear the flag so that if the
+                // timeout races with this callback we still load what the
+                // user saw. Loading reads QSPI and paints the display, so
+                // hand it to the main loop rather than doing it here.
+                pendingLoadIndex = previewModelIndex;
+                isPreviewingModel = false;
+            }
+            break;
+        }
+        case UiMode::SettingsMenu: {
+            if (inc != 0) {
+                // Clamp rather than wrap: scrolling past "Back" must not
+                // land the cursor back on "Reset".
+                int newCursor = settingsCursor + inc;
+                if (newCursor < 0) newCursor = 0;
+                if (newCursor >= kSettingsMenuCount) newCursor = kSettingsMenuCount - 1;
+                settingsCursor = newCursor;
+            }
+            if (click) {
+                const SettingsMenuItem& item = kSettingsMenu[settingsCursor];
+                if (item.options == nullptr) {
+                    ExitSettingsMode();  // Back
+                } else {
+                    settingsEditValue = GetMenuItemValue(settingsCursor);
+                    uiMode = UiMode::SettingsEdit;
+                }
+            }
+            break;
+        }
+        case UiMode::SettingsEdit: {
+            const SettingsMenuItem& item = kSettingsMenu[settingsCursor];
+            if (inc != 0) {
+                int newValue = settingsEditValue + inc;
+                if (newValue < 0) newValue = 0;
+                if (newValue >= item.optionCount) newValue = item.optionCount - 1;
+                settingsEditValue = newValue;
+            }
+            if (click) {
+                CommitMenuItemValue(settingsCursor, settingsEditValue);
+                uiMode = UiMode::SettingsMenu;
+            }
+            break;
+        }
     }
 }
 
@@ -468,19 +746,38 @@ static bool UpdateKnob(float knobRaw, float& stored) {
     return true;
 }
 
+// Marks which knob just moved so the display can show its name/value; see
+// ActiveKnob and UpdateDisplay().
+static inline void NoteKnobActivity(ActiveKnob knob) {
+    lastActiveKnob = knob;
+    lastKnobActivityMs = daisy::System::GetNow();
+}
+
 void HandleKnobs() {
-    if (UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob))
+    if (UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob)) {
         inputGain.SetGain(KnobToNormalized(currentInputGainKnob));
-    if (UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob))
+        NoteKnobActivity(ActiveKnob::InputGain);
+    }
+    if (UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob)) {
         outputVolume.SetGain(KnobToNormalized(currentOutputVolumeKnob));
-    if (UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob))
+        NoteKnobActivity(ActiveKnob::OutputVolume);
+    }
+    if (UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob)) {
         reverbProcessor.setMix(currentReverbMixKnob);
-    if (UpdateKnob(hw.knobs[3].Value(), currentBassKnob))
+        NoteKnobActivity(ActiveKnob::ReverbMix);
+    }
+    if (UpdateKnob(hw.knobs[3].Value(), currentBassKnob)) {
         eq.SetBass(KnobToNormalized(currentBassKnob));
-    if (UpdateKnob(hw.knobs[4].Value(), currentMidKnob))
+        NoteKnobActivity(ActiveKnob::Bass);
+    }
+    if (UpdateKnob(hw.knobs[4].Value(), currentMidKnob)) {
         eq.SetMid(KnobToNormalized(currentMidKnob));
-    if (UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob))
+        NoteKnobActivity(ActiveKnob::Mid);
+    }
+    if (UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob)) {
         eq.SetTreble(KnobToNormalized(currentTrebleKnob));
+        NoteKnobActivity(ActiveKnob::Treble);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,20 +789,32 @@ void HandleKnobs() {
 static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
                             daisy::AudioHandle::OutputBuffer out,
                             size_t size) {
-    // Fast-path silence when audio is suppressed (mute window / model load).
-    if (audioSuppressed) {
+    // Fast-path silence when audio is suppressed (mute window / model load /
+    // settings mode).
+    if (audioSuppressed || InSettingsMode()) {
         for (size_t i = 0; i < size; ++i) { out[0][i] = 0.0f; out[1][i] = 0.0f; }
         return;
     }
 
-    // True-bypass path (both effects off). The relay routes the analog
-    // signal around the DSP; keep the codec path as dual mono until the
-    // hardware confirms whether DAC silence is preferable here.
+    // Bypass path (both effects off). In the default (relay) mode the relay
+    // routes the analog signal around the DSP and the codec path stays dual
+    // mono. In Direct and Mono-to-Stereo the relay never engages, so this is
+    // the actual signal path: Direct copies each input channel through
+    // separately (the input is physically mono, so the right channel is
+    // silence -- deliberate per spec); Mono-to-Stereo copies the left input
+    // to both outputs, same as the relay mode's codec path.
     if (!currentSettings->namEnabled && !currentSettings->reverbEnabled) {
-        for (size_t i = 0; i < size; ++i) {
-            const float x = in[0][i];
-            out[0][i] = x;
-            out[1][i] = x;
+        if (currentSettings->bufferedBypassMode == BypassDirect) {
+            for (size_t i = 0; i < size; ++i) {
+                out[0][i] = in[0][i];
+                out[1][i] = in[1][i];
+            }
+        } else {
+            for (size_t i = 0; i < size; ++i) {
+                const float x = in[0][i];
+                out[0][i] = x;
+                out[1][i] = x;
+            }
         }
         // A pending tail can never ring out from here, and leaving the counter
         // armed would make the next MDL-on run the reverb over silence for
@@ -578,6 +887,18 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     }
 }
 
+// Sum both output channels to the left only, at half gain so a centered
+// signal keeps its original level instead of gaining up to 6 dB. Applied
+// uniformly after ProcessAudioDsp rather than duplicated at each of its
+// return points.
+static inline void ApplyMonoOutput(daisy::AudioHandle::OutputBuffer out, size_t size) {
+    if (!currentSettings->monoOutput) return;
+    for (size_t i = 0; i < size; ++i) {
+        out[0][i] = 0.5f * (out[0][i] + out[1][i]);
+        out[1][i] = 0.0f;
+    }
+}
+
 void AudioCallback(daisy::AudioHandle::InputBuffer in,
                    daisy::AudioHandle::OutputBuffer out,
                    size_t size) {
@@ -590,9 +911,10 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
     HandleKnobs();
-    HandleFootswitches();
-    HandleEncoderMovement();
-    HandleEncoderClick();
+    // Footswitches are ignored in settings mode: toggling an effect the menu
+    // screen isn't showing would be silently confusing.
+    if (!InSettingsMode()) HandleFootswitches();
+    HandleEncoder();
 
     // -- True-bypass relay and analog mute --
     // Re-evaluated every block rather than only on footswitch edges, so the
@@ -601,9 +923,10 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     UpdateBypassRelay();
     StepBypassTiming((int32_t)size);
     hw.SetAudioBypass(relayBypassOn);
-    hw.SetAudioMute(relayMuteOn);
+    hw.SetAudioMute(relayMuteOn || InSettingsMode());
 
     ProcessAudioDsp(in, out, size);
+    ApplyMonoOutput(out, size);
 
     // -- LEDs out. Led::Update() advances the software-PWM sawtooth, so it has
     // to be called at a steady rate or the LEDs simply do not light. --
@@ -695,6 +1018,29 @@ void CheckSettingsSave() {
         settings.Save();
         settingsDirty = false;
     }
+}
+
+// The settings menu's Reset->Confirm action. Reboots into the bootloader,
+// same as the physical reset button. Runs on the main loop, not the audio
+// ISR: it blocks, writes a GPIO and never returns.
+void HandlePendingReset() {
+    if (!pendingReset) return;
+    pendingReset = false;
+
+    // Flush now: the debounced save is up to SAVE_DELAY_MS away and the
+    // reboot would beat it.
+    if (settingsDirty) {
+        settings.Save();
+        settingsDirty = false;
+    }
+
+    ShowMessage("Resetting...");
+
+    // DAISY, not STM: this firmware is APP_TYPE = BOOT_SRAM, so a plain
+    // reboot lands in the Daisy bootloader and its normal DFU timeout
+    // window -- what the physical reset button does. STM mode would instead
+    // park in the ROM bootloader until reflashed over DFU.
+    daisy::System::ResetToBootloader(daisy::System::BootloaderMode::DAISY);
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +1166,7 @@ int main(void) {
     hw.StartAudio(AudioCallback);
 
     while (true) {
+        HandlePendingReset();
         HandlePendingLoad();
         CheckPreviewTimeout();
         HandleDspFault();

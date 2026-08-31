@@ -22,7 +22,7 @@ struct ModelEntry {
 };
 
 static constexpr int MAX_MODEL_COUNT = 128;
-static constexpr int MODEL_COUNT = 29;
+static constexpr int MODEL_COUNT = 27;
 static constexpr uintptr_t CAPTURE_DATA_QSPI_BASE = 0x900c1000;
 static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x000c0000;
 
@@ -49,11 +49,9 @@ static const ModelEntry model_entries[MODEL_COUNT] = {
     { ModelType::NamOnly, "Friedman Buxom", "Med Gain 2 - Bright", CAPTURE_DATA_QSPI_BASE + 0x270fc, 7484, 1871, -16.8314857f, 1, 0, 0, 0, 0xd8599dce },
     { ModelType::NamOnly, "Friedman Buxom", "UltraClean 1", CAPTURE_DATA_QSPI_BASE + 0x28e38, 7484, 1871, -20.7707825f, 1, 0, 0, 0, 0x93dd0681 },
     { ModelType::NamOnly, "Friedman Buxom", "UltraClean 1 - Bright", CAPTURE_DATA_QSPI_BASE + 0x2ab74, 7484, 1871, -22.8053379f, 1, 0, 0, 0, 0xb5781ef9 },
-    { ModelType::NamAndIr, "Marshall 1987x", "Jumped lower right", CAPTURE_DATA_QSPI_BASE + 0x2c8b0, 7484, 1871, -18.3815112f, 1, CAPTURE_DATA_QSPI_BASE + 0x2e5ec, 16384, 4096, 0xac862426 },
-    { ModelType::NamAndIr, "Marshall 1987x", "Jumpered upper left", CAPTURE_DATA_QSPI_BASE + 0x325ec, 7484, 1871, -19.2674953f, 1, CAPTURE_DATA_QSPI_BASE + 0x34328, 16384, 4096, 0x715c1603 },
-    { ModelType::NamOnly, "Martin JTM50", "Broadside boost", CAPTURE_DATA_QSPI_BASE + 0x38328, 7484, 1871, -9.6730489f, 1, 0, 0, 0, 0xe6c1704e },
-    { ModelType::NamOnly, "Matchless Brave", "Match Brave Hi", CAPTURE_DATA_QSPI_BASE + 0x3a064, 7484, 1871, -16.9213535f, 1, 0, 0, 0, 0x7cc0ec08 },
-    { ModelType::NamOnly, "Matchless Brave", "Match Brave Lo", CAPTURE_DATA_QSPI_BASE + 0x3bda0, 7484, 1871, -19.3857207f, 1, 0, 0, 0, 0x1feb9dc3 },
-    { ModelType::NamOnly, "Princeton Deluxe", "V07 T6 B4 Bright", CAPTURE_DATA_QSPI_BASE + 0x3dadc, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
-    { ModelType::NamOnly, "Princeton Deluxe", "V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x3f818, 7484, 1871, -16.0291502f, 1, 0, 0, 0, 0xd362f12b },
+    { ModelType::NamOnly, "Martin JTM50", "Broadside boost", CAPTURE_DATA_QSPI_BASE + 0x2c8b0, 7484, 1871, -9.6730489f, 1, 0, 0, 0, 0xe6c1704e },
+    { ModelType::NamOnly, "Matchless Brave", "Match Brave Hi", CAPTURE_DATA_QSPI_BASE + 0x2e5ec, 7484, 1871, -16.9213535f, 1, 0, 0, 0, 0x7cc0ec08 },
+    { ModelType::NamOnly, "Matchless Brave", "Match Brave Lo", CAPTURE_DATA_QSPI_BASE + 0x30328, 7484, 1871, -19.3857207f, 1, 0, 0, 0, 0x1feb9dc3 },
+    { ModelType::NamOnly, "Princeton Deluxe", "V07 T6 B4 Bright", CAPTURE_DATA_QSPI_BASE + 0x32064, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
+    { ModelType::NamOnly, "Princeton Deluxe", "V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x33da0, 7484, 1871, -16.0291502f, 1, 0, 0, 0, 0xd362f12b },
 };

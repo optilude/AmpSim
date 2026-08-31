@@ -2,7 +2,7 @@
 
 A guitar amp/cab simulator featuring NAM A2 Lite captures, cabinet IRs, and plate reverb in a guitar pedal format.
 
-Heavily inpsired by https://github.com/bkshepherd/DaisySeedProjects, and using its excellent hardware platform.
+Heavily inspired by https://github.com/bkshepherd/DaisySeedProjects, and using its excellent hardware platform.
 
 ## Overview
 

@@ -62,15 +62,6 @@ inline constexpr int kDilations[kNumLayers] = {
 static constexpr int kSampleGroup = 4;
 static_assert(kBlockSize % kSampleGroup == 0, "group must tile the block");
 
-// A tap reads kSampleGroup consecutive columns starting anywhere in
-// [0, cols), so the tail of a group can run off the end of the ring. Testing
-// for that costs a compare, a branch and a fresh base-address multiply on
-// every sample of every tap -- which was the bulk of the non-arithmetic work
-// in the inner loop. Instead the ring is allocated with that many spare
-// columns on the end, and the write step mirrors into them; the tap loop then
-// walks a plain pointer with no wrap logic at all.
-static constexpr int kGuardCols = kSampleGroup - 1;
-
 // Per-layer history ring geometry, derived rather than tabulated so the
 // +kSampleGroup below cannot drift out of sync with the loop that needs it.
 //
@@ -80,8 +71,6 @@ static constexpr int kGuardCols = kSampleGroup - 1;
 // before reading any taps, so the oldest tap of the group's first sample must
 // survive kSampleGroup writes -- hence the extra headroom. Without it, layer 0
 // (7 columns, reach 5) would overwrite its own history mid-group.
-//
-// cols is the modulus; the allocation is cols + kGuardCols columns wide.
 struct HistoryLayout {
     int cols[kNumLayers];
     int offset[kNumLayers];
@@ -94,7 +83,7 @@ inline constexpr HistoryLayout MakeHistoryLayout() {
     for (int i = 0; i < kNumLayers; ++i) {
         h.cols[i] = (kKernelSizes[i] - 1) * kDilations[i] + 2 + kSampleGroup;
         h.offset[i] = off;
-        off += (h.cols[i] + kGuardCols) * kChannels;
+        off += h.cols[i] * kChannels;
     }
     h.total = off;
     return h;
@@ -260,20 +249,12 @@ inline void process_layer_impl(State& st, HotState& hot, const SharedWeights& sw
         // 1. Publish this group's inputs into the ring before any tap reads,
         //    because the newest taps read them back. Safe only because the
         //    ring carries kSampleGroup columns of headroom; see kHistory.
-        //
-        //    The first kGuardCols columns are mirrored to the guard copies at
-        //    the end, so a tap whose group straddles the wrap point still
-        //    reads current data from a straight run of memory.
         for (int j = 0; j < kSampleGroup; ++j) {
             const float* src = in + (n0 + j) * 3;
             int col = wp + j;
             if (col >= cols) col -= cols;
             float* histCol = hist + col * 3;
             histCol[0] = src[0]; histCol[1] = src[1]; histCol[2] = src[2];
-            if (col < kGuardCols) {
-                float* guard = histCol + cols * 3;
-                guard[0] = src[0]; guard[1] = src[1]; guard[2] = src[2];
-            }
         }
 
         // 2. Seed the accumulators. Small enough to stay in registers once the
@@ -298,14 +279,13 @@ inline void process_layer_impl(State& st, HotState& hot, const SharedWeights& sw
             int col = wp - (kernelSize - 1 - k) * dilation;
             if (col < 0) col += cols;
 
-            // col is at most cols-1 and the run is kSampleGroup long, so the
-            // last read is at cols + kGuardCols - 1: the last guard column.
-            const float* s = hist + col * 3;
-            for (int j = 0; j < kSampleGroup; ++j, s += 3) {
+            for (int j = 0; j < kSampleGroup; ++j) {
+                const float* s = hist + col * 3;
                 const float s0 = s[0], s1 = s[1], s2 = s[2];
                 z[j][0] += s0 * w0 + s1 * w3 + s2 * w6;
                 z[j][1] += s0 * w1 + s1 * w4 + s2 * w7;
                 z[j][2] += s0 * w2 + s1 * w5 + s2 * w8;
+                if (++col >= cols) col = 0;
             }
         }
 

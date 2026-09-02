@@ -17,6 +17,7 @@ OPT = -Ofast
 CPP_SOURCES = src/main.cpp \
               src/nam_processor.cpp \
               src/reverb_arena.cpp \
+              src/tuner_processor.cpp \
               Hardware/guitar_pedal_125b.cpp \
               src/dattorro/Dattorro.cpp
 
@@ -33,10 +34,14 @@ C_SOURCES += $(CMSIS_DSP_DIR)/Source/TransformFunctions/arm_rfft_fast_f32.c \
              $(CMSIS_DSP_DIR)/Source/BasicMathFunctions/arm_add_f32.c
 
 # Include paths (compat first to shadow std::mutex)
+# -isystem (not -I) for the vendored tuner deps: their own headers trigger
+# -Wall warnings we don't want to fix upstream, and -isystem suppresses them.
 C_INCLUDES = -Iinclude/compat \
              -Isrc \
              -IHardware \
-             -I$(CMSIS_DSP_DIR)/Include
+             -I$(CMSIS_DSP_DIR)/Include \
+             -isystem third_party/q/include \
+             -isystem third_party/oneeurofilter
 
 # Library Locations
 LIBDAISY_DIR = libDaisy
@@ -73,6 +78,14 @@ CPPFLAGS := $(filter-out -MMD -MP -MF%,$(CPPFLAGS))
 $(BUILD_DIR)/%.o: %.cpp Makefile | $(BUILD_DIR)
 	$(CXX) -c $(CPPFLAGS) $(CPP_STANDARD) -MMD -MP -MF"$(@:%.o=%.d)" \
 		-Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.cpp=.lst)) $< -o $@
+
+# Cycfi Q (vendored under third_party/q/) needs C++20 concepts/requires-clauses
+# (q/support/unit.hpp, q/support/basic_concepts.hpp); the rest of AmpSim
+# builds at gnu++17. tuner_processor.cpp is the only TU that includes Q
+# headers (see src/tuner_processor.h), so only its object gets the override --
+# this is a target-specific variable, picked up by $(CPP_STANDARD) in the
+# pattern rule above when building this one file.
+$(BUILD_DIR)/tuner_processor.o: CPP_STANDARD = -std=gnu++20
 
 # Static A2 Lite runtime is exception-free and allocation-free in audio.
 

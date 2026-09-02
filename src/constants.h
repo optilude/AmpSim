@@ -25,6 +25,7 @@ constexpr float MUTE_OFF_TRANSITION_S = 0.020f;       // unmute at 20 ms
 constexpr uint32_t DISPLAY_UPDATE_INTERVAL_MS = 33;  // ~30 FPS
 constexpr uint32_t ERROR_DISPLAY_TIME_MS = 5000;  // 5 seconds
 constexpr uint32_t ENCODER_LONG_PRESS_MS = 700;  // hold to enter/exit settings
+constexpr uint32_t FS2_TUNER_HOLD_MS = 2000;     // hold FS2 to open/close the tuner
 // How long the knob-value overlay stays up after the last knob movement
 // before the display reverts to the model/variant screen.
 constexpr uint32_t KNOB_DISPLAY_TIMEOUT_MS = 1000;

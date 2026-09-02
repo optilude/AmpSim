@@ -54,6 +54,38 @@ This document provides detailed information about third-party software, algorith
 - **Note**: The submodule is retained for desktop validation and reference work,
   but firmware does not dynamically link against it
 
+### Cycfi Q (Pitch Detection Library)
+
+**IMPORTANT: This component is Boost Software License 1.0 licensed**
+
+- **Project**: https://github.com/cycfi/q
+- **License**: Boost Software License 1.0
+- **Copyright**: (c) 2014-2026 Joel de Guzman
+- **Purpose**: Zero-crossing + bitstream autocorrelation pitch detection
+  (`pitch_detector`) and its pre-conditioning chain (`signal_conditioner`),
+  used by the chromatic tuner
+- **Usage**: A 36-header subset is vendored under `third_party/q/include/`,
+  traced by include reachability from `q/pitch/pitch_detector.hpp` and
+  `q/fx/signal_conditioner.hpp` (the only two entry points AmpSim actually
+  uses). Wrapped by `src/tuner_processor.cpp`, the only translation unit that
+  includes any Q header (see that file for why it is isolated and built at
+  C++20 while the rest of AmpSim stays on C++17). `q/support/pitch_names.hpp`
+  was deliberately **not** vendored; the two frequency constants AmpSim needs
+  from it are computed directly in `tuner_processor.cpp` instead.
+- **Sub-component**: `infra/assert.hpp` (also vendored, under
+  `third_party/q/include/infra/`) is MIT-licensed, (c) 2016-2023 Joel de Guzman
+
+### 1€ Filter
+- **Project**: https://cristal.univ-lille.fr/~casiez/1euro/ (Géry Casiez,
+  Nicolas Roussel, Daniel Vogel)
+- **License**: MIT
+- **Copyright**: (c) 2014-2020 Jonathan Aceituno
+- **Purpose**: Smooths the chromatic tuner's raw `pitch_detector` frequency
+  output before it is displayed
+- **Usage**: Vendored verbatim as `third_party/oneeurofilter/1efilter.hpp`,
+  itself copied from `Util/1efilter.hpp` in
+  https://github.com/bkshepherd/DaisySeedProjects (`Software/GuitarPedal/`)
+
 ## Algorithms
 
 ### Dattorro 1997 Plate Reverb Implementation
@@ -110,6 +142,20 @@ The reverb components affected:
   and Damp are not exposed as separate controls; only Mix (shared with the
   Dattorro engine's knob) is user-adjustable.
 
+### Chromatic Tuner (Cycfi Q wrapper + UI)
+- **Source**: `Util/frequency_detector_q.h`/`.cpp` and
+  `Effect-Modules/tuner_module.h`/`.cpp` in
+  https://github.com/bkshepherd/DaisySeedProjects (`Software/GuitarPedal/`)
+- **License**: MIT (c) 2023 Keith Shepherd
+- **Ported to**: `src/tuner_processor.h`/`.cpp` (the Cycfi Q + 1€ filter
+  wrapper) and `DrawTunerScreen()` in `src/main.cpp` (the note-name/octave/
+  block-strip/frequency display)
+- **Usage**: Entered by holding FS2 for 2 seconds; keeps upstream's detector
+  configuration, smoothing constants, and 21-block in-tune strip layout,
+  adapted to AmpSim's manual `SetCursor`/`WriteString` display conventions and
+  wired into AmpSim's own footswitch/bypass/mute state machine rather than
+  upstream's effect-module framework
+
 ## Hardware
 
 ### Daisy Seed 3
@@ -142,10 +188,25 @@ AmpSim's MIT license:
 - NeuralAmpModelerCore
 - The ported "Simple" reverb engine (`Effect-Modules/reverb_module.h`/`.cpp`
   from bkshepherd/DaisySeedProjects)
+- The ported chromatic tuner UI and note math
+  (`Util/frequency_detector_q.h`/`.cpp`, `Effect-Modules/tuner_module.h`/`.cpp`
+  from bkshepherd/DaisySeedProjects)
+- The 1€ filter (`third_party/oneeurofilter/1efilter.hpp`)
+- Cycfi Q's `infra/assert.hpp` (vendored alongside the Boost-licensed Q core,
+  see below)
 
 ### LGPL v2.1-Licensed Components
 - **DaisySP-LGPL** (`ReverbSc`, used by the "Simple" reverb engine) -- see the
   DaisySP-LGPL section above for compliance details
+
+### Boost Software License 1.0-Licensed Components
+- **Cycfi Q** (`third_party/q/include/`, the pitch-detection engine behind the
+  chromatic tuner) -- see the Cycfi Q section above for what is vendored and
+  why. Boost SL 1.0 is a short, permissive license (similar in effect to MIT)
+  that requires only that the license text accompany source and binary
+  redistributions; it imposes no copyleft or attribution-in-UI obligation. The
+  full text is reproduced at https://www.boost.org/LICENSE_1_0.txt and should
+  be included alongside this file in any redistribution.
 
 ### ARM CMSIS
 Located in: `libDaisy/Drivers/CMSIS*/`
@@ -167,6 +228,8 @@ Each third-party dependency includes a LICENSE file in its respective directory:
 ├── NeuralAmpModelerCore/LICENSE
 ├── libDaisy/Drivers/STM32H7xx_HAL_Driver/LICENSE.md
 ├── libDaisy/Drivers/CMSIS*/LICENSE.*
+├── third_party/q/LICENSE
+├── third_party/oneeurofilter/LICENSE
 └── ... (and others)
 ```
 
@@ -176,13 +239,16 @@ When building AmpSim, you are combining:
 1. **Your own code** (MIT license)
 2. **MIT-licensed dependencies** (libDaisy, DaisySP, NeuralAmpModelerCore)
 3. **An LGPL v2.1-licensed dependency** (DaisySP-LGPL's `ReverbSc`, statically linked)
-4. **Proprietary hardware support code** (STM32 HAL, ARM CMSIS)
-5. **Published algorithms** (Dattorro reverb)
+4. **A Boost Software License 1.0-licensed dependency** (Cycfi Q, statically linked)
+5. **Proprietary hardware support code** (STM32 HAL, ARM CMSIS)
+6. **Published algorithms** (Dattorro reverb)
 
 This combination is permissible because:
 - MIT is a permissive license compatible with proprietary code
 - The project remains fully open source, satisfying LGPL v2.1's static-linking
   requirement that users be able to rebuild against a modified copy of the library
+- Boost SL 1.0 is permissive and imposes no copyleft obligation, only that its
+  license text travel with the source/binary
 - The Dattorro algorithm is not subject to copyright
 - You retain rights to derivative works and binary distributions
 
@@ -200,4 +266,4 @@ in the respective directories.
 
 ---
 
-**Last Updated**: September 1, 2026
+**Last Updated**: September 2, 2026

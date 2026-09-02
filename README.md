@@ -1,21 +1,22 @@
 # AmpSim - Guitar Amp Simulator based on Daisy Seed
 
-A guitar amp/cab simulator featuring NAM A2 Lite captures, cabinet IRs, and plate reverb in a guitar pedal format.
+A guitar amp/cab simulator featuring NAM A2 Lite captures, cabinet IRs, and plate reverb in a guitar pedal format. Includes a tuner.
 
 Heavily inspired by https://github.com/bkshepherd/DaisySeedProjects, and using its excellent hardware platform.
 
 ## Overview
 
-AmpSim combines cutting-edge neural amp modeling with studio-quality reverb in a compact pedal format:
+AmpSim combines neural amp modeling with studio-quality reverb in a compact pedal format:
 
 - **NAM A2-Lite**: Static A2 Lite runtime for authentic tube amp tones
 - **Cabinet IR mode**: Load impulse responses for cabinet simulation only
-- **Dattorro Plate Reverb**: Stereo plate reverb with smooth decay
+- **Dattorro Plate Reverb**: Stereo plate reverb with smooth decay.
+- **Simple Reverb**: An alternative, simplier reverb is also available.
 - **True Bypass Relay**: Or buffered relay, via a setting, if desired.
 - **6 Control Knobs**: Input gain, output volume, reverb mix, 3-band EQ
 - **Rotary Encoder**: Browse and select from multiple amp models
-- **State Persistence**: Selected capture and effect states are saved to QSPI
-- **Stereo Output**: Reverb produces stereo widening effect
+- **State Persistence**: Selected capture and effect states are saved between restarts.
+- **Stereo Output**: Or mono, selectable via the settings menu.
 
 ## Hardware
 
@@ -43,11 +44,11 @@ See below for build instructions.
 
 **Footswitches:**
 - **FS1 (Left)**: Toggle NAM or IR amp modeling on/off
-- **FS2 (Right)**: Toggle reverb on/off
+- **FS2 (Right)**: Toggle reverb on/off. Long-press to enable tuner.
 
 **Knobs:**
 
-The two three knobs are:
+The top three knobs are:
 
 1. Input gain
 2. Output volume

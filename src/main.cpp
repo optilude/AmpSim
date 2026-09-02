@@ -34,6 +34,7 @@
 #include "settings.h"
 #include "gain_stage.h"
 #include "guitar_eq.h"
+#include "tuner_processor.h"
 #include "constants.h"
 #include "float_guard.h"
 #include "helpers.h"
@@ -68,6 +69,9 @@ IRProcessor irProcessor;
 GainStage inputGain;
 GainStage outputVolume;
 GuitarEQ eq;
+// Allocates its ~40KB Cycfi Q detector state from the heap once, in
+// TunerProcessor::init() -- see the call in main() and tuner_processor.h.
+TunerProcessor tuner;
 
 // ---------------------------------------------------------------------------
 // State
@@ -127,6 +131,17 @@ int settingsCursor = 0;                  // menu item under the cursor
 int settingsEditValue = 0;               // candidate value while in SettingsEdit
 bool encoderLongPressFired = false;      // latch so long-press fires once per hold
 volatile bool pendingReset = false;      // main loop performs the reboot
+
+// ---------------------------------------------------------------------------
+// Tuner mode
+//
+// Not folded into UiMode: InSettingsMode() (uiMode != Normal) disables
+// footswitches entirely (see AudioCallback), but FS2 must stay live while the
+// tuner is open so it can exit. A separate flag keeps that independent.
+// ---------------------------------------------------------------------------
+volatile bool tunerMode = false;
+bool fs2LongPressFired = false;          // latch so the hold fires once per press
+bool reverbBeforeFs2Press = false;       // undoes FS2's instant toggle if the hold completes
 
 static const char* const kMonoOutOptions[] = {"Off", "On"};
 static const char* const kBypassOptions[] = {"True", "Direct", "Mono>Str"};
@@ -284,6 +299,7 @@ void SaveSettingsDebounced() {
 static inline void UpdateBypassRelay() {
     const bool shouldBypass = currentSettings->bufferedBypassMode == BypassRelay
                            && !InSettingsMode()
+                           && !tunerMode
                            && !currentSettings->namEnabled
                            && !currentSettings->reverbEnabled;
 
@@ -441,7 +457,87 @@ static void DrawSettingsScreen() {
     hw.display.Update();
 }
 
+// Ported from bkshepherd's DaisySeedProjects GuitarPedal TunerModule::DrawUI
+// (Effect-Modules/tuner_module.cpp, MIT) -- same 21-block strip, note/octave
+// readout and cents-to-blocks mapping, adapted to this project's manual
+// SetCursor/WriteString-and-WriteStringAligned display convention.
+static void DrawTunerScreen() {
+    hw.display.Fill(false);
+
+    const Rectangle bounds(0, 0, 128, 64);
+    static const char* const kNoteNames[12] =
+        {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+
+    const bool hasPitch = tuner.hasPitch();
+
+    if (hasPitch) {
+        char noteBuf[4];
+        snprintf(noteBuf, sizeof noteBuf, "%s", kNoteNames[((tuner.noteIndex() % 12) + 12) % 12]);
+        hw.display.WriteStringAligned(noteBuf, Font_16x26, bounds, Alignment::topCentered, true);
+
+        char octaveBuf[4];
+        snprintf(octaveBuf, sizeof octaveBuf, "%d", tuner.octave());
+        hw.display.WriteStringAligned(octaveBuf, Font_11x18, bounds, Alignment::topRight, true);
+    }
+
+    // This has to be an odd count so the middle block can mean "in tune".
+    constexpr int kBlockCount = 21;
+    constexpr int kInTuneBlockIndex = (kBlockCount - 1) / 2;
+    constexpr int kNumBlocksOutOfTune = (kBlockCount - 1) / 2;
+    constexpr float kCloseThresholdCents = 1.0f;
+    // Nearly half a semitone, so the strip fills up just before the note name
+    // would flip to its sharp/flat neighbour.
+    constexpr float kFarLimitCents = 45.0f;
+
+    bool blockActive[kBlockCount] = {false};
+
+    if (hasPitch) {
+        blockActive[kInTuneBlockIndex] = true;
+
+        const float percentage = std::clamp(std::abs(tuner.cents()) / kFarLimitCents, 0.0f, 1.0f);
+        int blocksToLight = static_cast<int>(kNumBlocksOutOfTune * percentage);
+        if (blocksToLight < 1) blocksToLight = 1;
+        if (std::abs(tuner.cents()) < kCloseThresholdCents) blocksToLight = 0;
+
+        if (tuner.cents() < 0.0f) {
+            for (int i = kInTuneBlockIndex - 1; i >= 0 && blocksToLight > 0; --i, --blocksToLight)
+                blockActive[i] = true;
+        } else {
+            for (int i = kInTuneBlockIndex + 1; i < kBlockCount && blocksToLight > 0; ++i, --blocksToLight)
+                blockActive[i] = true;
+        }
+    }
+
+    // The 3-arg Rectangle overload of DrawRect (declared in the
+    // OneBitGraphicsDisplay base) is hidden here: OneBitGraphicsDisplayImpl
+    // redeclares DrawRect with the 6-coordinate signature and there's no
+    // `using` to unhide the base overload, so this calls that one directly
+    // (x1,y1)-(x2,y2) corners, not (x,y,width,height).
+    const int blockWidth = 128 / kBlockCount;
+    constexpr int kStripTop = 30;
+    int x = 0;
+    for (int block = 0; block < kBlockCount; ++block) {
+        if (block == kInTuneBlockIndex) {
+            hw.display.DrawRect(x, kStripTop - 5, x + blockWidth, kStripTop - 5 + 20, true, blockActive[block]);
+        } else {
+            hw.display.DrawRect(x, kStripTop, x + blockWidth, kStripTop + blockWidth, true, blockActive[block]);
+        }
+        x += blockWidth;
+    }
+
+    if (hasPitch) {
+        // No %f: this build links --specs=nano.specs with no _printf_float.
+        const float freq = tuner.frequency();
+        char freqBuf[16];
+        snprintf(freqBuf, sizeof freqBuf, "%d.%02d", (int)freq, (int)((freq - (int)freq) * 100));
+        hw.display.WriteStringAligned(freqBuf, Font_7x10, bounds, Alignment::bottomCentered, true);
+    }
+
+    hw.display.Update();
+}
+
 void UpdateDisplay() {
+    if (tunerMode) { DrawTunerScreen(); return; }
     if (InSettingsMode()) { DrawSettingsScreen(); return; }
 
     hw.display.Fill(false);
@@ -722,17 +818,41 @@ void HandleEncoder() {
 }
 
 void HandleFootswitches() {
-    // switches[0] (FS2 on the enclosure): Reverb on/off
+    // switches[0] (FS2 on the enclosure): Reverb on/off, or the tuner on a
+    // 2-second hold. FS2 keeps its instant toggle-on-press feel; a hold that
+    // completes undoes that toggle before opening the tuner, and a press
+    // while the tuner is open closes it without touching reverb at all.
     if (hw.switches[0].RisingEdge()) {
-        currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
-        if (currentSettings->reverbEnabled) {
-            reverbTailBlocks = 0;
+        if (tunerMode) {
+            tunerMode = false;
+            fs2LongPressFired = true;  // suppress immediate re-entry this hold
         } else {
-            // Let the tail ring out, then stop paying for the reverb.
-            reverbTailBlocks = reverbTailBlocksFull;
+            reverbBeforeFs2Press = currentSettings->reverbEnabled;
+            currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
+            if (currentSettings->reverbEnabled) {
+                reverbTailBlocks = 0;
+            } else {
+                // Let the tail ring out, then stop paying for the reverb.
+                reverbTailBlocks = reverbTailBlocksFull;
+            }
+            SaveSettingsDebounced();
         }
-        SaveSettingsDebounced();
     }
+
+    if (!tunerMode && !fs2LongPressFired && hw.switches[0].Pressed() &&
+        hw.switches[0].TimeHeldMs() >= FS2_TUNER_HOLD_MS) {
+        fs2LongPressFired = true;
+
+        // Undo the instant toggle the press fired on its way in.
+        currentSettings->reverbEnabled = reverbBeforeFs2Press;
+        reverbTailBlocks = currentSettings->reverbEnabled ? 0 : reverbTailBlocksFull;
+        SaveSettingsDebounced();
+
+        tuner.reset();
+        tunerMode = true;
+    }
+
+    if (hw.switches[0].FallingEdge()) fs2LongPressFired = false;
 
     // switches[1] (FS1 on the enclosure): model engine on/off
     if (hw.switches[1].RisingEdge()) {
@@ -815,6 +935,19 @@ void HandleKnobs() {
 static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
                             daisy::AudioHandle::OutputBuffer out,
                             size_t size) {
+    // Tuner mode feeds every sample to the detector and outputs silence,
+    // skipping NAM/EQ/reverb entirely so the tuner never competes with the
+    // amp chain for CPU. Checked before the audioSuppressed early-out below
+    // since that's the settings-mode-derived suppression, not this one.
+    if (tunerMode) {
+        for (size_t i = 0; i < size; ++i) {
+            tuner.process(in[0][i]);
+            out[0][i] = 0.0f;
+            out[1][i] = 0.0f;
+        }
+        return;
+    }
+
     // Fast-path silence when audio is suppressed (mute window / model load /
     // settings mode).
     if (audioSuppressed || InSettingsMode()) {
@@ -956,7 +1089,7 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     UpdateBypassRelay();
     StepBypassTiming((int32_t)size);
     hw.SetAudioBypass(relayBypassOn);
-    hw.SetAudioMute(relayMuteOn || InSettingsMode());
+    hw.SetAudioMute(relayMuteOn || InSettingsMode() || tunerMode);
 
     ProcessAudioDsp(in, out, size);
     ApplyMonoOutput(out, size);
@@ -1148,6 +1281,10 @@ int main(void) {
     eq.Init(hw.AudioSampleRate());
     irProcessor.init(g_ir_freq_buf, g_ir_fdl_buf);
     loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+
+    // Tuner: allocates its Cycfi Q detector state from the heap (~40KB, once).
+    // Must happen here at boot, never lazily from the audio callback.
+    tuner.init(hw.AudioSampleRate());
     reverbTailBlocksFull = (int32_t)(REVERB_TAIL_SECONDS * hw.AudioSampleRate()
                                      / (float)hw.AudioBlockSize());
     bypassToggleTransitionSamples =

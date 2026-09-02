@@ -42,6 +42,11 @@ C_INCLUDES = -Iinclude/compat \
 LIBDAISY_DIR = libDaisy
 DAISYSP_DIR = DaisySP
 
+# Pulls in DaisySP-LGPL (ReverbSc), used by the Settings menu's alternative
+# "Simple" reverb engine. LGPL v2.1, unlike the rest of DaisySP -- see
+# THIRD_PARTY.md.
+USE_DAISYSP_LGPL = 1
+
 # Use Daisy bootloader: application is written to QSPI flash via DFU, then
 # copied to SRAM by the bootloader. The large capture blob remains in QSPI.
 APP_TYPE = BOOT_SRAM

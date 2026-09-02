@@ -2,10 +2,13 @@
 // Copyright (c) 2025 AmpSim Contributors
 //
 // LICENSING NOTE: This project includes GPL v3-licensed components
-// (Dattorro reverb from Flick project). See LICENSE and THIRD_PARTY.md
-// for full licensing details and compliance information.
+// (Dattorro reverb from Flick project) and an LGPL v2.1-licensed component
+// (DaisySP-LGPL's ReverbSc, behind the Settings menu's "Simple" reverb
+// engine). See LICENSE and THIRD_PARTY.md for full licensing details and
+// compliance information.
 //
-// NAM A2 processing with Dattorro plate reverb and full control scheme.
+// NAM A2 processing with a choice of two reverb engines (Dattorro plate or
+// ReverbSc, selectable in the Settings menu) and full control scheme.
 //
 // Signal path (per audio block):
 //   in[0] -> [inputGain] -> [NAM or IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
@@ -13,14 +16,16 @@
 // A model is a NAM capture or a cabinet IR, never both: chaining them costs
 // both engines' budgets in one block and does not fit alongside the reverb.
 //
-// The dry+wet mix is applied inside ReverbProcessor::process. When both
-// effects are off, the true-bypass relay handles the analog path and the
-// callback echoes silence (the codec output is muted while the relay flips
-// and the analog signal is routed around the DSP).
+// The dry+wet mix is applied inside ReverbProcessor::process (Dattorro) or
+// SimpleReverbProcessor::process (ReverbSc). When both effects are off, the
+// true-bypass relay handles the analog path and the callback echoes silence
+// (the codec output is muted while the relay flips and the analog signal is
+// routed around the DSP).
 
 #include "guitar_pedal_125b.h"
 #include "nam_processor.h"
 #include "reverb_processor.h"
+#include "simple_reverb_processor.h"
 #include "reverb_arena.h"
 #include "dattorro/dsp/delays/InterpDelay.hpp"
 #include "capture_index.h"
@@ -55,6 +60,10 @@ GuitarPedal125B hw;
 // ---------------------------------------------------------------------------
 NAMProcessor namProcessor;
 ReverbProcessor reverbProcessor;
+// ReverbSc keeps its delay buffers inline in the object (~386 KiB) rather
+// than behind a pluggable arena, so the whole object -- not just some
+// member -- has to be placed in SDRAM directly. See simple_reverb_processor.h.
+SimpleReverbProcessor DSY_SDRAM_BSS simpleReverbProcessor;
 IRProcessor irProcessor;
 GainStage inputGain;
 GainStage outputVolume;
@@ -109,6 +118,7 @@ void SaveSettingsDebounced();
 // ---------------------------------------------------------------------------
 enum class UiMode { Normal, SettingsMenu, SettingsEdit };
 enum BufferedBypassMode { BypassRelay = 0, BypassDirect = 1, BypassMonoToStereo = 2 };
+enum ReverbEngineType { ReverbEngineDattorro = 0, ReverbEngineSimple = 1 };
 
 volatile UiMode uiMode = UiMode::Normal;
 static inline bool InSettingsMode() { return uiMode != UiMode::Normal; }
@@ -120,6 +130,7 @@ volatile bool pendingReset = false;      // main loop performs the reboot
 
 static const char* const kMonoOutOptions[] = {"Off", "On"};
 static const char* const kBypassOptions[] = {"True", "Direct", "Mono>Str"};
+static const char* const kReverbEngineOptions[] = {"Dattorro", "Simple"};
 static const char* const kResetOptions[] = {"Cancel", "Confirm"};
 
 struct SettingsMenuItem {
@@ -129,10 +140,11 @@ struct SettingsMenuItem {
 };
 
 static const SettingsMenuItem kSettingsMenu[] = {
-    {"Mono out", kMonoOutOptions, 2},
-    {"Bypass",   kBypassOptions,  3},
-    {"Reset",    kResetOptions,   2},
-    {"Back",     nullptr,         0},
+    {"Mono out", kMonoOutOptions,       2},
+    {"Bypass",   kBypassOptions,        3},
+    {"Reverb",   kReverbEngineOptions,  2},
+    {"Reset",    kResetOptions,         2},
+    {"Back",     nullptr,               0},
 };
 static constexpr int kSettingsMenuCount = sizeof(kSettingsMenu) / sizeof(kSettingsMenu[0]);
 
@@ -141,7 +153,8 @@ static int GetMenuItemValue(int item) {
     switch (item) {
         case 0: return currentSettings->monoOutput ? 1 : 0;
         case 1: return currentSettings->bufferedBypassMode;
-        case 2: return 1;  // Reset defaults to Confirm: click, click resets
+        case 2: return currentSettings->reverbEngine;
+        case 3: return 1;  // Reset defaults to Confirm: click, click resets
         default: return 0;
     }
 }
@@ -158,6 +171,10 @@ static void CommitMenuItemValue(int item, int value) {
             SaveSettingsDebounced();
             break;
         case 2:
+            currentSettings->reverbEngine = (uint8_t)value;
+            SaveSettingsDebounced();
+            break;
+        case 3:
             if (value == 1) pendingReset = true;
             break;
         default:
@@ -769,7 +786,10 @@ void HandleKnobs() {
         NoteKnobActivity(ActiveKnob::OutputVolume);
     }
     if (UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob)) {
+        // Both engines track the same knob so switching engines in the
+        // Settings menu doesn't need to re-apply Mix.
         reverbProcessor.setMix(currentReverbMixKnob);
+        simpleReverbProcessor.setMix(currentReverbMixKnob);
         NoteKnobActivity(ActiveKnob::ReverbMix);
     }
     if (UpdateKnob(hw.knobs[3].Value(), currentBassKnob)) {
@@ -872,12 +892,19 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     //    around the DSP entirely, so trails only apply while the model
     //    engine keeps the DSP path alive.
     if (currentSettings->reverbEnabled || reverbTailBlocks > 0) {
+        // Hoisted out of the per-sample loop below -- one branch per block,
+        // not one per sample.
+        const bool useSimpleReverb = currentSettings->reverbEngine == ReverbEngineSimple;
         for (size_t i = 0; i < size; ++i) {
             float l, r;
             // If reverb is disabled, we feed silence (0.0f) to the reverb input to let it decay,
             // while mixing the dry signal as normal.
             const float reverbInput = currentSettings->reverbEnabled ? scratchWet[i] : 0.0f;
-            reverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
+            if (useSimpleReverb) {
+                simpleReverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
+            } else {
+                reverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
+            }
             const float g = outputVolume.Tick();
             out[0][i] = l * g;
             out[1][i] = r * g;
@@ -1013,6 +1040,7 @@ void HandleDspFault() {
     irProcessor.clear();
     eq.Reset();
     reverbProcessor.clear();
+    simpleReverbProcessor.clear();
     loadMeter.Reset();
     audioSuppressed = false;
 }
@@ -1074,6 +1102,11 @@ static void InitReverbOrHalt() {
     // reverb doesn't dynamically add delays. Clear the arena pointer so any
     // stray InterpDelay would fall back to heap and be caught in review.
     InterpDelayArena::set(nullptr, 0);
+
+    // The Simple engine's delay lines are embedded directly in
+    // simpleReverbProcessor's own SDRAM placement, not carved from the
+    // Dattorro arena above, so it inits unconditionally.
+    simpleReverbProcessor.init(hw.AudioSampleRate());
 }
 
 // libDaisy's startup code only zeroes .bss. The tiered-memory sections we
@@ -1130,6 +1163,7 @@ int main(void) {
     inputGain.SetGain(KnobToNormalized(currentInputGainKnob));
     outputVolume.SetGain(KnobToNormalized(currentOutputVolumeKnob));
     reverbProcessor.setMix(currentReverbMixKnob);
+    simpleReverbProcessor.setMix(currentReverbMixKnob);
     eq.SetBass(KnobToNormalized(currentBassKnob));
     eq.SetMid(KnobToNormalized(currentMidKnob));
     eq.SetTreble(KnobToNormalized(currentTrebleKnob));

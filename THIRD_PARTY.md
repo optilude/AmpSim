@@ -21,6 +21,29 @@ This document provides detailed information about third-party software, algorith
   - **Soundpipe** (Paul Batchelor, MIT): Audio DSP library
 - **Usage**: EQ filters, filter utilities, general DSP helpers
 
+### DaisySP-LGPL
+
+**IMPORTANT: This component is LGPL v2.1 licensed**
+
+- **Project**: https://github.com/electro-smith/DaisySP (the `DaisySP-LGPL` submodule)
+- **License**: GNU Lesser General Public License v2.1
+- **Copyright**: (c) 2023 Electrosmith, Corp, Sean Costello, Istvan Varga, Paul Batchelor
+- **Purpose**: Provides `ReverbSc`, a Schroeder/Costello-style FDN reverb used
+  by the Settings menu's "Simple" reverb engine (`src/simple_reverb_processor.h`)
+  as a lighter-weight alternative to the Dattorro plate tank
+- **Usage**: Statically linked as `libdaisysp-lgpl.a` (built from
+  `DaisySP/DaisySP-LGPL/`, enabled via `USE_DAISYSP_LGPL=1` in the Makefile)
+- **LGPL v2.1 compliance**: Because this is a statically-linked embedded
+  firmware image (no dynamic relinking is possible on the target), LGPL v2.1
+  compliance is satisfied by this project remaining fully open source: the
+  complete source of both AmpSim and the exact `DaisySP-LGPL` version it links
+  against is available, so anyone can rebuild the firmware against a modified
+  copy of the library. See `DaisySP/DaisySP-LGPL/LICENSE` for the full license
+  text.
+- **Note**: This is a separate submodule from `DaisySP` above -- the rest of
+  `DaisySP` remains MIT-licensed. Only the `Simple` reverb engine depends on
+  `DaisySP-LGPL`.
+
 ### NeuralAmpModelerCore
 - **Project**: https://github.com/sdatkinson/NeuralAmpModeler
 - **License**: MIT
@@ -74,6 +97,19 @@ The reverb components affected:
 - `src/reverb_arena.h` (SDRAM allocation for reverb)
 - `src/reverb_processor.h` (wrapper and integration)
 
+### "Simple" Reverb Engine (ReverbSc wrapper)
+
+- **Source**: `Effect-Modules/reverb_module.h` and `.cpp` in
+  https://github.com/bkshepherd/DaisySeedProjects (`Software/GuitarPedal/`)
+- **License**: MIT (c) 2023 Keith Shepherd
+- **Ported to**: `src/simple_reverb_processor.h`
+- **Usage**: AmpSim's port keeps bkshepherd's Time/Damp-to-ReverbSc parameter
+  mapping and default values (Time = 0.45, Damp = 0.3), adapted to AmpSim's
+  `process(reverbIn, dryIn, outL, outR)` / `setMix` / `clear` interface so it
+  can be selected from the Settings menu alongside the Dattorro engine. Time
+  and Damp are not exposed as separate controls; only Mix (shared with the
+  Dattorro engine's knob) is user-adjustable.
+
 ## Hardware
 
 ### Daisy Seed 3
@@ -104,6 +140,12 @@ AmpSim's MIT license:
 - libDaisy
 - DaisySP (and its sub-components: Plaits, Soundpipe)
 - NeuralAmpModelerCore
+- The ported "Simple" reverb engine (`Effect-Modules/reverb_module.h`/`.cpp`
+  from bkshepherd/DaisySeedProjects)
+
+### LGPL v2.1-Licensed Components
+- **DaisySP-LGPL** (`ReverbSc`, used by the "Simple" reverb engine) -- see the
+  DaisySP-LGPL section above for compliance details
 
 ### ARM CMSIS
 Located in: `libDaisy/Drivers/CMSIS*/`
@@ -121,6 +163,7 @@ Each third-party dependency includes a LICENSE file in its respective directory:
 ```
 ├── libDaisy/LICENSE
 ├── DaisySP/LICENSE
+├── DaisySP/DaisySP-LGPL/LICENSE
 ├── NeuralAmpModelerCore/LICENSE
 ├── libDaisy/Drivers/STM32H7xx_HAL_Driver/LICENSE.md
 ├── libDaisy/Drivers/CMSIS*/LICENSE.*
@@ -132,11 +175,14 @@ Each third-party dependency includes a LICENSE file in its respective directory:
 When building AmpSim, you are combining:
 1. **Your own code** (MIT license)
 2. **MIT-licensed dependencies** (libDaisy, DaisySP, NeuralAmpModelerCore)
-3. **Proprietary hardware support code** (STM32 HAL, ARM CMSIS)
-4. **Published algorithms** (Dattorro reverb)
+3. **An LGPL v2.1-licensed dependency** (DaisySP-LGPL's `ReverbSc`, statically linked)
+4. **Proprietary hardware support code** (STM32 HAL, ARM CMSIS)
+5. **Published algorithms** (Dattorro reverb)
 
 This combination is permissible because:
 - MIT is a permissive license compatible with proprietary code
+- The project remains fully open source, satisfying LGPL v2.1's static-linking
+  requirement that users be able to rebuild against a modified copy of the library
 - The Dattorro algorithm is not subject to copyright
 - You retain rights to derivative works and binary distributions
 
@@ -154,4 +200,4 @@ in the respective directories.
 
 ---
 
-**Last Updated**: August 31, 2025
+**Last Updated**: September 1, 2026

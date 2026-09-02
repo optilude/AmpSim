@@ -10,7 +10,7 @@
 // treated as factory defaults instead of being reinterpreted.
 struct PersistentSettings {
     // Bump when the struct layout changes to invalidate stale flash.
-    static constexpr uint32_t kSchemaVersion = 3;
+    static constexpr uint32_t kSchemaVersion = 4;
 
     uint32_t schemaVersion;
     int32_t modelIndex;
@@ -18,6 +18,7 @@ struct PersistentSettings {
     uint8_t reverbEnabled;
     uint8_t monoOutput;         // 0 = stereo (default), 1 = sum to left only
     uint8_t bufferedBypassMode; // 0 = relay true bypass, 1 = direct, 2 = mono-to-stereo
+    uint8_t reverbEngine;       // 0 = Dattorro plate (default), 1 = Simple (ReverbSc)
 
     PersistentSettings()
         : schemaVersion(kSchemaVersion)
@@ -26,6 +27,7 @@ struct PersistentSettings {
         , reverbEnabled(true)
         , monoOutput(0)
         , bufferedBypassMode(0)
+        , reverbEngine(0)
     {}
 
     bool operator==(const PersistentSettings& other) const {
@@ -34,7 +36,8 @@ struct PersistentSettings {
             && namEnabled == other.namEnabled
             && reverbEnabled == other.reverbEnabled
             && monoOutput == other.monoOutput
-            && bufferedBypassMode == other.bufferedBypassMode;
+            && bufferedBypassMode == other.bufferedBypassMode
+            && reverbEngine == other.reverbEngine;
     }
 
     bool operator!=(const PersistentSettings& other) const {
@@ -97,6 +100,7 @@ public:
         s.reverbEnabled = s.reverbEnabled ? 1 : 0;
         s.monoOutput = s.monoOutput ? 1 : 0;
         if (s.bufferedBypassMode > 2) s.bufferedBypassMode = 0;
+        if (s.reverbEngine > 1) s.reverbEngine = 0;
     }
 
 private:

@@ -784,11 +784,15 @@ void HandleEncoder() {
                 pendingLoadIndex = previewModelIndex;
                 isPreviewingModel = false;
             } else if (click) {
-                previewModelIndex = IsValidModelIndex(currentSettings->modelIndex)
-                                        ? currentSettings->modelIndex
-                                        : 0;
-                isInspectingCurrentModel = true;
-                previewStartTime = daisy::System::GetNow();
+                if (isInspectingCurrentModel) {
+                    isInspectingCurrentModel = false;
+                } else {
+                    previewModelIndex = IsValidModelIndex(currentSettings->modelIndex)
+                                            ? currentSettings->modelIndex
+                                            : 0;
+                    isInspectingCurrentModel = true;
+                    previewStartTime = daisy::System::GetNow();
+                }
             }
             break;
         }

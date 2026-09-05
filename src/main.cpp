@@ -86,6 +86,7 @@ PersistentSettings* currentSettings = nullptr;  // Wired to storage in main().
 // Model browsing (encoder-driven).
 int previewModelIndex = 0;
 bool isPreviewingModel = false;
+bool isInspectingCurrentModel = false;
 uint32_t previewStartTime = 0;
 
 // Display update throttling.
@@ -149,7 +150,7 @@ bool reverbBeforeFs2Press = false;       // undoes FS2's instant toggle if the h
 
 static const char* const kMonoOutOptions[] = {"Off", "On"};
 static const char* const kBypassOptions[] = {"True", "Direct", "Mono>Str"};
-static const char* const kReverbEngineOptions[] = {"Dattorro", "Simple"};
+static const char* const kReverbEngineOptions[] = {"Plate", "Simple"};
 static const char* const kResetOptions[] = {"Cancel", "Confirm"};
 
 struct SettingsMenuItem {
@@ -204,6 +205,7 @@ static void CommitMenuItemValue(int item, int value) {
 static void EnterSettingsMode() {
     // Cancel any in-flight preview/load so it cannot paint over the menu.
     isPreviewingModel = false;
+    isInspectingCurrentModel = false;
     pendingLoadIndex = -1;
     settingsCursor = 0;
     uiMode = UiMode::SettingsMenu;
@@ -562,26 +564,25 @@ void UpdateDisplay() {
         hw.display.SetCursor(0, 20);
         hw.display.WriteString(value, Font_11x18, true);
     } else {
-        const int shownIndex = isPreviewingModel ? previewModelIndex : currentSettings->modelIndex;
+        const bool smallModelView = isPreviewingModel || isInspectingCurrentModel;
+        const int shownIndex = smallModelView ? previewModelIndex : currentSettings->modelIndex;
         const bool haveModels = (MODEL_COUNT > 0) && shownIndex >= 0 && shownIndex < MODEL_COUNT;
 
-        // Line 0: model name (with preview arrow if browsing). Confirmed
-        // selections get the big font, same as the knob overlay; while
-        // previewing (still scrolling the encoder, before the click that
-        // confirms) it drops to the smaller font so more of the name is
-        // visible -- exactly when the player is comparing similar-looking
-        // names. Either way, names longer than the font's width are clipped
-        // with a trailing '~' rather than silently cut off by the display
-        // driver's own per-character bounds check -- a clipped name should
-        // read as clipped, not as a different, shorter name.
-        const FontDef& font = isPreviewingModel ? Font_7x10 : Font_11x18;
-        const size_t maxChars = isPreviewingModel ? kSmallFontChars : kBigFontChars;
-        const int line1Y = isPreviewingModel ? 14 : 20;
+        // Line 0: model name (with an arrow in the small-font detail view).
+        // The normal view uses the big font; clicking or browsing switches to
+        // the small font so more of the name is visible. Either way, names
+        // longer than the font's width are clipped with a trailing '~' rather
+        // than silently cut off by the display driver's per-character bounds
+        // check -- a clipped name should read as clipped, not as a different,
+        // shorter name.
+        const FontDef& font = smallModelView ? Font_7x10 : Font_11x18;
+        const size_t maxChars = smallModelView ? kSmallFontChars : kBigFontChars;
+        const int line1Y = smallModelView ? 14 : 20;
 
         char clipped[kSmallFontChars + 1];
         hw.display.SetCursor(0, 0);
         if (haveModels) {
-            const char* prefix = isPreviewingModel ? "> " : "";
+            const char* prefix = smallModelView ? "> " : "";
             ClipForDisplay(clipped, sizeof clipped, model_entries[shownIndex].model_name,
                            maxChars - strlen(prefix));
             snprintf(line, sizeof line, "%s%s", prefix, clipped);
@@ -772,6 +773,7 @@ void HandleEncoder() {
 
                 previewModelIndex = newIndex;
                 isPreviewingModel = true;
+                isInspectingCurrentModel = false;
                 previewStartTime = daisy::System::GetNow();
             }
             if (click && isPreviewingModel) {
@@ -781,6 +783,12 @@ void HandleEncoder() {
                 // hand it to the main loop rather than doing it here.
                 pendingLoadIndex = previewModelIndex;
                 isPreviewingModel = false;
+            } else if (click) {
+                previewModelIndex = IsValidModelIndex(currentSettings->modelIndex)
+                                        ? currentSettings->modelIndex
+                                        : 0;
+                isInspectingCurrentModel = true;
+                previewStartTime = daisy::System::GetNow();
             }
             break;
         }
@@ -1145,7 +1153,7 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
 // touches QSPI.
 // ---------------------------------------------------------------------------
 void CheckPreviewTimeout() {
-    if (!isPreviewingModel) return;
+    if (!isPreviewingModel && !isInspectingCurrentModel) return;
 
     const uint32_t now = daisy::System::GetNow();
     if (now - previewStartTime > PREVIEW_TIMEOUT_MS) {
@@ -1153,6 +1161,7 @@ void CheckPreviewTimeout() {
                                 ? currentSettings->modelIndex
                                 : 0;
         isPreviewingModel = false;
+        isInspectingCurrentModel = false;
     }
 }
 

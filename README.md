@@ -58,7 +58,7 @@ The bottom three knobs are a three-band EQ: Bass, Middle, Treble. At noon, the E
 
 **Rotary encoder:**
 - **Rotate**: Browse available NAM models
-- **Click**: Load the previewed model
+- **Click**: Show the full current model name, or load the previewed model while browsing
 - **Long-press**: Enter the settings menu
 
 **Bypass**

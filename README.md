@@ -120,6 +120,19 @@ make clean
 make clean-all
 ```
 
+The callback-noise notch filter is enabled by default. To compile it out, clean
+first and pass `CALLBACK_NOISE_FILTER=0` to both the build and flash commands:
+
+```bash
+make clean
+make CALLBACK_NOISE_FILTER=0
+make program-dfu CALLBACK_NOISE_FILTER=0
+```
+
+Use the normal commands, or explicitly set `CALLBACK_NOISE_FILTER=1`, to restore
+the filter. Make does not track changes to command-line build options, so always
+run `make clean` when switching this setting.
+
 ### Flashing
 
 **First-time setup: Install Daisy bootloader**

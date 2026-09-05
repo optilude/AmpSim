@@ -52,6 +52,13 @@ DAISYSP_DIR = DaisySP
 # THIRD_PARTY.md.
 USE_DAISYSP_LGPL = 1
 
+# Set to 0 to compile out the callback-noise notch filter.
+CALLBACK_NOISE_FILTER ?= 1
+ifneq ($(filter $(CALLBACK_NOISE_FILTER),0 1),$(CALLBACK_NOISE_FILTER))
+$(error CALLBACK_NOISE_FILTER must be 0 or 1)
+endif
+C_DEFS += -DAMPSIM_CALLBACK_NOISE_FILTER=$(CALLBACK_NOISE_FILTER)
+
 # Use Daisy bootloader: application is written to QSPI flash via DFU, then
 # copied to SRAM by the bootloader. The large capture blob remains in QSPI.
 APP_TYPE = BOOT_SRAM

@@ -70,8 +70,9 @@ IRProcessor irProcessor;
 GainStage inputGain;
 GainStage outputVolume;
 GuitarEQ eq;
+#if AMPSIM_CALLBACK_NOISE_FILTER
 CallbackNoiseFilter callbackNoiseFilter;
-volatile bool callbackNoiseFilterEnabled = true;
+#endif
 // Allocates its ~40KB Cycfi Q detector state from the heap once, in
 // TunerProcessor::init() -- see the call in main() and tuner_processor.h.
 TunerProcessor tuner;
@@ -626,8 +627,9 @@ void UpdateDisplay() {
 
         int off = 0;
         line[0] = '\0';
-        off += snprintf(line + off, sizeof(line) - off, "NTCH %s ",
-                        callbackNoiseFilterEnabled ? "ON" : "OFF");
+        if (namActive) off += snprintf(line + off, sizeof(line) - off, "NAM ");
+        if (irActive) off += snprintf(line + off, sizeof(line) - off, "IR ");
+        if (currentSettings->reverbEnabled) off += snprintf(line + off, sizeof(line) - off, "REV ");
         if (off > 0) line[off - 1] = '\0';  // drop the trailing separator space
         hw.display.SetCursor(0, 54);
         hw.display.WriteString(line, Font_6x8, true);
@@ -762,7 +764,8 @@ void HandleEncoder() {
 
     switch (uiMode) {
         case UiMode::Normal: {
-            if (MODEL_COUNT > 0 && inc != 0) {
+            if (MODEL_COUNT == 0) break;
+            if (inc != 0) {
                 int newIndex = previewModelIndex + inc;
                 if (newIndex < 0) newIndex = MODEL_COUNT - 1;
                 if (newIndex >= MODEL_COUNT) newIndex = 0;
@@ -778,9 +781,6 @@ void HandleEncoder() {
                 // hand it to the main loop rather than doing it here.
                 pendingLoadIndex = previewModelIndex;
                 isPreviewingModel = false;
-            } else if (click) {
-                callbackNoiseFilterEnabled = !callbackNoiseFilterEnabled;
-                callbackNoiseFilter.Reset();
             }
             break;
         }
@@ -989,7 +989,9 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     // -- DSP path --
     // 1) Input gain (per-sample tick keeps smoothing rate = sample rate).
     for (size_t i = 0; i < size; ++i) scratchDry[i] = in[0][i] * inputGain.Tick();
-    if (callbackNoiseFilterEnabled) callbackNoiseFilter.ProcessBlock(scratchDry, size);
+#if AMPSIM_CALLBACK_NOISE_FILTER
+    callbackNoiseFilter.ProcessBlock(scratchDry, size);
+#endif
 
     // 2) Selected model engine: NAM A2 Lite and/or cabinet IR.
     if (currentSettings->namEnabled && IsValidModelIndex(currentSettings->modelIndex)) {
@@ -1284,7 +1286,9 @@ int main(void) {
     inputGain.Init(hw.AudioSampleRate());
     outputVolume.Init(hw.AudioSampleRate());
     eq.Init(hw.AudioSampleRate());
+#if AMPSIM_CALLBACK_NOISE_FILTER
     callbackNoiseFilter.Init(hw.AudioSampleRate());
+#endif
     irProcessor.init(g_ir_freq_buf, g_ir_fdl_buf);
     loadMeter.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
 

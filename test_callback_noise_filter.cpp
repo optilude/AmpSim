@@ -26,7 +26,7 @@ static float MeasureGainDb(float frequency) {
 }
 
 int main() {
-    for (float frequency : {1000.0f, 2000.0f, 3000.0f}) {
+    for (float frequency : {1000.0f, 2000.0f, 3000.0f, 4000.0f}) {
         const float gainDb = MeasureGainDb(frequency);
         if (gainDb > -50.0f) {
             std::fprintf(stderr, "[FAIL] %.0f Hz rejection was only %.2f dB\n",
@@ -35,7 +35,8 @@ int main() {
         }
     }
 
-    for (float frequency : {900.0f, 1100.0f, 1900.0f, 2100.0f, 2900.0f, 3100.0f}) {
+    for (float frequency : {900.0f, 1100.0f, 1900.0f, 2100.0f, 2900.0f, 3100.0f,
+                            3900.0f, 4100.0f}) {
         const float gainDb = MeasureGainDb(frequency);
         if (gainDb < -1.0f) {
             std::fprintf(stderr, "[FAIL] %.0f Hz adjacent loss was %.2f dB\n",
@@ -58,6 +59,6 @@ int main() {
         }
     }
 
-    std::printf("[PASS] Callback-noise notches reject 1/2/3 kHz, preserve adjacent frequencies, and reset cleanly\n");
+    std::printf("[PASS] Callback-noise notches reject 1/2/3/4 kHz, preserve adjacent frequencies, and reset cleanly\n");
     return 0;
 }

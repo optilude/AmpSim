@@ -4,13 +4,14 @@
 #include <cstddef>
 
 // Narrow notches for callback-periodic input interference measured at
-// 1/2/3 kHz.
+// 1/2/3/4 kHz.
 class CallbackNoiseFilter {
 public:
     void Init(float sampleRate) {
         notches_[0].Init(sampleRate, 1000.0f, kQ);
         notches_[1].Init(sampleRate, 2000.0f, kQ);
         notches_[2].Init(sampleRate, 3000.0f, kQ);
+        notches_[3].Init(sampleRate, 4000.0f, kQ);
     }
 
     void Reset() {
@@ -60,5 +61,5 @@ private:
         float y1 = 0.0f, y2 = 0.0f;
     };
 
-    Notch notches_[3];
+    Notch notches_[4];
 };

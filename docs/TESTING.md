@@ -126,11 +126,9 @@ Persistence is enabled under `BOOT_SRAM` using a dedicated QSPI settings sector.
 
 #### Callback-noise filter
 
-Three narrow Q=40 notches at the measured 1, 2, and 3 kHz callback harmonics
-run immediately before the model engine. In normal playback mode, click the
-encoder without first turning it to toggle the filter; the status line shows
-`NTCH ON` or `NTCH OFF`. When a model preview is visible, the click retains its
-normal load-model action.
+Four narrow Q=40 notches at the measured 1, 2, 3, and 4 kHz callback harmonics
+run immediately before the model engine. They are enabled by default and can be
+compiled out with `CALLBACK_NOISE_FILTER=0`; see the README build instructions.
 
 - [ ] **No audio dropouts**
   - Play for 5+ minutes

@@ -10,8 +10,9 @@ AmpSim combines neural amp modeling with studio-quality reverb in a compact peda
 
 - **NAM A2-Lite**: Static A2 Lite runtime for authentic tube amp tones
 - **Cabinet IR mode**: Load impulse responses for cabinet simulation only
+- **Combined models**: Pair a NAM head capture with a cabinet IR in one selectable model
 - **Dattorro Plate Reverb**: Stereo plate reverb with smooth decay.
-- **Simple Reverb**: An alternative, simplier reverb is also available.
+- **Simple Reverb**: An alternative, simpler reverb is also available.
 - **True Bypass Relay**: Or buffered relay, via a setting, if desired.
 - **6 Control Knobs**: Input gain, output volume, reverb mix, 3-band EQ
 - **Rotary Encoder**: Browse and select from multiple amp models
@@ -68,8 +69,11 @@ By default, the pedal operates with true stereo bypass. You can enable buffered 
 ## Signal Chain
 
 ```
-Input → Input Gain → NAM A2 Lite or Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
+Input → Input Gain → NAM A2 Lite → Cabinet IR → 3-Band EQ → Reverb → Output Volume → Output
 ```
+
+Standalone models skip the unused NAM or IR stage. Combined models always run
+the NAM capture into the IR before EQ and reverb.
 
 # Building & Flashing
 
@@ -176,6 +180,17 @@ Models and IRs live in the `Models/` directory of the build. Subdirectories repr
 
 Files placed in this directory will be processed by the build (e.g. `make all`) and prepared for flashing onto the firmware.
 
+To create a combined head-and-cab model, put a `.nam` capture and a `.wav` IR
+with the same basename in the same model directory. For example,
+`Models/My Amp/Clean.nam` and `Models/My Amp/Clean.wav` appear once in the UI as
+`My Amp / Clean` and process NAM into IR. The status bar shows `NAM+IR`, followed
+by `REV` when reverb is enabled.
+
+Combined NAM+IR processing only has enough CPU headroom with the Simple reverb.
+When a combined model and reverb are active, AmpSim therefore uses Simple even
+if the Settings menu is set to Plate. The saved reverb choice is not changed;
+Plate is used again when a standalone NAM or IR model is selected.
+
 ## Obtaining NAM Models
 
 1. **Train your own**: Use [NeuralAmpModeler](https://github.com/sdatkinson/NeuralAmpModeler) to capture your amp
@@ -193,7 +208,7 @@ make clean && make
 make program-dfu
 ```
 
-`tools/build_capture_blob.py` accepts exact A2 Lite NAM captures (WaveNet, 3 channels, 23 layers, 1871 weights) and 48 kHz mono WAV cabinet IRs. Unsupported files fail the build. Up to 128 total captures are supported.
+`tools/build_capture_blob.py` accepts exact A2 Lite NAM captures (WaveNet, 3 channels, 23 layers, 1871 weights) and 48 kHz mono/stereo WAV cabinet IRs. Unsupported files fail the build. Up to 128 total models are supported; a same-basename NAM+IR pair counts as one model.
 
 ## Testing Your Build
 

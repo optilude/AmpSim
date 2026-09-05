@@ -177,6 +177,46 @@ int main() {
     if (peak > 10.0f) return fail("IR output peak unexpectedly high");
     writeWavMono16("build/ir-render.wav", rendered);
     printf("[PASS] IR render is finite and bounded (peak %.3f, rms %.4f)\n", peak, std::sqrt(energy / di.size()));
+
+    // Firmware calls the IR in 48-sample chunks while convolution works in
+    // 128-sample partitions. Its deferred schedule must produce the same
+    // stream as direct partition-sized calls, delayed by one partition.
+    std::vector<float> chunkedFreq(IRProcessor::kMaxPartitions * ConvolutionEngine::N);
+    std::vector<float> chunkedFdl(IRProcessor::kMaxPartitions * ConvolutionEngine::N);
+    IRProcessor chunkedIr;
+    chunkedIr.init(chunkedFreq.data(), chunkedFdl.data());
+    if (!chunkedIr.loadModel(*irEntry)) return fail("chunked IR loadModel failed");
+
+    constexpr size_t kCallbackBlock = 48;
+    const size_t chunkedCount = ((rendered.size() + IRProcessor::kConvBlock
+                                  + kCallbackBlock - 1) / kCallbackBlock) * kCallbackBlock;
+    std::vector<float> chunkedRendered(chunkedCount);
+    float chunkedIn[kCallbackBlock]{};
+    float chunkedOut[kCallbackBlock]{};
+    for (size_t pos = 0; pos < chunkedCount; pos += kCallbackBlock) {
+        for (size_t i = 0; i < kCallbackBlock; ++i)
+            chunkedIn[i] = (pos + i < di.size()) ? di[pos + i] : 0.0f;
+        chunkedIr.processBlock(chunkedIn, chunkedOut, kCallbackBlock);
+        std::copy(chunkedOut, chunkedOut + kCallbackBlock, chunkedRendered.begin() + pos);
+    }
+
+    float maxChunkError = 0.0f;
+    for (size_t i = 0; i < rendered.size(); ++i)
+        maxChunkError = std::max(maxChunkError,
+                                 std::fabs(rendered[i] - chunkedRendered[i + IRProcessor::kConvBlock]));
+    if (maxChunkError > 1e-5f) return fail("48-sample deferred render differs from direct convolution");
+    if (chunkedIr.deferredScheduleMissed()) return fail("deferred work missed an IR block deadline");
+    printf("[PASS] Deferred 48-sample render matches direct convolution (max error %.2g)\n",
+           maxChunkError);
+
+    bool sawCombined = false;
+    for (const ModelEntry& entry : entries) {
+        if (entry.ir_byte_count == 0) continue;
+        if (!ir.loadModel(entry)) return fail("generated IR payload failed to load");
+        if (entry.type == ModelType::NamAndIr) sawCombined = true;
+    }
+    if (!sawCombined) return fail("no combined NAM+IR model in capture index");
+    printf("[PASS] Combined NAM+IR metadata loads in the IR processor\n");
     printf("[INFO] Wrote build/ir-render.wav for listening\n");
     printf("\nAll IR tests passed.\n");
     return 0;

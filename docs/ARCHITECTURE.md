@@ -16,7 +16,7 @@ Input → Input Gain → NAM A2 Lite and/or Cabinet IR → 3-Band EQ → Reverb 
 1. **Input Gain**: Optimizes signal level for NAM model input
 2. **Model engine**: NAM A2 Lite and/or cabinet IR (can run sequentially if put in the same subfolder)
 3. **EQ**: Post-model tone shaping
-4. **Reverb**: Dattorro plate reverb (mono input, stereo output)
+4. **Reverb**: Dattorro plate or Simple reverb (mono input, stereo output); combined NAM+IR models force Simple
 5. **Output Volume**: Final level control before output
 
 ## Audio Components
@@ -44,8 +44,8 @@ Input → Input Gain → NAM A2 Lite and/or Cabinet IR → 3-Band EQ → Reverb 
 - MuleBox-style uniform partitioned overlap-save convolution
 - 128-sample partition, 256-point CMSIS-DSP real FFT
 - IR WAVs are converted to 4096-sample normalized float captures in QSPI
-- IR FFT/FDL buffers live in SDRAM
-- NAM and IR modes are mutually exclusive in the current firmware
+- IR FFT/FDL buffers live in on-chip RAM_D2
+- Same-directory NAM and IR files with the same basename run sequentially as one model
 
 ### Reverb Processor (`reverb_processor.h`, `reverb_arena.{h,cpp}`)
 - Dattorro 1997 plate reverb algorithm

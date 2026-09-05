@@ -11,10 +11,10 @@
 // ReverbSc, selectable in the Settings menu) and full control scheme.
 //
 // Signal path (per audio block):
-//   in[0] -> [inputGain] -> [NAM or IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
+//   in[0] -> [inputGain] -> [NAM] -> [IR] -> [3-band EQ] -> [reverb wet/dry] -> [outputVolume] -> out[0,1]
 //
-// A model is a NAM capture or a cabinet IR, never both: chaining them costs
-// both engines' budgets in one block and does not fit alongside the reverb.
+// Standalone NAM and IR models skip the unused stage. Combined NAM+IR models
+// force the lower-cost Simple reverb engine when reverb is active.
 //
 // The dry+wet mix is applied inside ReverbProcessor::process (Dattorro) or
 // SimpleReverbProcessor::process (ReverbSc). When both effects are off, the
@@ -621,15 +621,21 @@ void UpdateDisplay() {
         const bool haveModels = (MODEL_COUNT > 0) && currentSettings->modelIndex >= 0
                               && currentSettings->modelIndex < MODEL_COUNT;
         const bool modelActive = currentSettings->namEnabled && haveModels;
+        const bool combinedActive = modelActive
+                                 && model_entries[currentSettings->modelIndex].type == ModelType::NamAndIr;
         const bool irActive = modelActive
-                            && model_entries[currentSettings->modelIndex].type == ModelType::IrOnly;
+                    && model_entries[currentSettings->modelIndex].type != ModelType::NamOnly;
         const bool namActive = modelActive
-                             && model_entries[currentSettings->modelIndex].type == ModelType::NamOnly;
+                     && model_entries[currentSettings->modelIndex].type != ModelType::IrOnly;
 
         int off = 0;
         line[0] = '\0';
-        if (namActive) off += snprintf(line + off, sizeof(line) - off, "NAM ");
-        if (irActive) off += snprintf(line + off, sizeof(line) - off, "IR ");
+        if (combinedActive) {
+            off += snprintf(line + off, sizeof(line) - off, "NAM+IR ");
+        } else {
+            if (namActive) off += snprintf(line + off, sizeof(line) - off, "NAM ");
+            if (irActive) off += snprintf(line + off, sizeof(line) - off, "IR ");
+        }
         if (currentSettings->reverbEnabled) off += snprintf(line + off, sizeof(line) - off, "REV ");
         if (off > 0) line[off - 1] = '\0';  // drop the trailing separator space
         hw.display.SetCursor(0, 54);
@@ -709,11 +715,10 @@ void LoadModel(int index) {
     namProcessor.reset();
     irProcessor.clear();
     
-    if (entry.type == ModelType::NamOnly) {
-        ok &= namProcessor.loadModel(entry);
-    } else if (entry.type == ModelType::IrOnly) {
-        ok &= irProcessor.loadModel(entry);
-    }
+    if (entry.type == ModelType::NamOnly || entry.type == ModelType::NamAndIr)
+        ok = namProcessor.loadModel(entry) && ok;
+    if (entry.type == ModelType::IrOnly || entry.type == ModelType::NamAndIr)
+        ok = irProcessor.loadModel(entry) && ok;
     
     audioSuppressed = false;
 
@@ -1005,18 +1010,20 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     callbackNoiseFilter.ProcessBlock(scratchDry, size);
 #endif
 
-    // 2) Selected model engine: NAM A2 Lite and/or cabinet IR.
+    // 2) Selected model engine: NAM A2 Lite, cabinet IR, or NAM into IR.
+    float* modelOutput = scratchWet;
     if (currentSettings->namEnabled && IsValidModelIndex(currentSettings->modelIndex)) {
         const ModelEntry& entry = model_entries[currentSettings->modelIndex];
 
-        // One engine or the other, never both -- running a NAM into a cabinet
-        // IR costs both their budgets in the same block, which does not fit
-        // alongside the reverb. So this is a single pass with no intermediate
-        // buffer rather than the NAM-then-IR chain it used to be.
         if (entry.type == ModelType::NamOnly && namProcessor.isModelLoaded()) {
             namProcessor.process(scratchDry, scratchWet, size);
         } else if (entry.type == ModelType::IrOnly && irProcessor.isLoaded()) {
             irProcessor.processBlock(scratchDry, scratchWet, size);
+        } else if (entry.type == ModelType::NamAndIr
+                   && namProcessor.isModelLoaded() && irProcessor.isLoaded()) {
+            namProcessor.process(scratchDry, scratchWet, size);
+            irProcessor.processBlock(scratchWet, scratchDry, size);
+            modelOutput = scratchDry;
         } else {
             for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
         }
@@ -1026,12 +1033,12 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
         // Both recirculate their output into their own state, so one NaN here
         // silences the pedal until power-cycled. Silencing the block and
         // handing recovery to the main loop keeps the reverb usable.
-        if (fguard::SilenceIfNonFinite(scratchWet, size)) {
+        if (fguard::SilenceIfNonFinite(modelOutput, size)) {
             dspFaultPending = true;
         }
 
         // 3) Tone stack (only when model engine is on — pass-through otherwise).
-        eq.ProcessBlock(scratchWet, scratchWet, size);
+        eq.ProcessBlock(modelOutput, modelOutput, size);
     } else {
         // Pass through the dry path (model engine off) as if it were the "wet".
         for (size_t i = 0; i < size; ++i) scratchWet[i] = scratchDry[i];
@@ -1046,16 +1053,20 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     if (currentSettings->reverbEnabled || reverbTailBlocks > 0) {
         // Hoisted out of the per-sample loop below -- one branch per block,
         // not one per sample.
-        const bool useSimpleReverb = currentSettings->reverbEngine == ReverbEngineSimple;
+        const bool combinedModelActive = currentSettings->namEnabled
+                                      && IsValidModelIndex(currentSettings->modelIndex)
+                                      && model_entries[currentSettings->modelIndex].type == ModelType::NamAndIr;
+        const bool useSimpleReverb = combinedModelActive
+                                  || currentSettings->reverbEngine == ReverbEngineSimple;
         for (size_t i = 0; i < size; ++i) {
             float l, r;
             // If reverb is disabled, we feed silence (0.0f) to the reverb input to let it decay,
             // while mixing the dry signal as normal.
-            const float reverbInput = currentSettings->reverbEnabled ? scratchWet[i] : 0.0f;
+            const float reverbInput = currentSettings->reverbEnabled ? modelOutput[i] : 0.0f;
             if (useSimpleReverb) {
-                simpleReverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
+                simpleReverbProcessor.process(reverbInput, modelOutput[i], &l, &r);
             } else {
-                reverbProcessor.process(reverbInput, scratchWet[i], &l, &r);
+                reverbProcessor.process(reverbInput, modelOutput[i], &l, &r);
             }
             const float g = outputVolume.Tick();
             out[0][i] = l * g;
@@ -1065,7 +1076,7 @@ static void ProcessAudioDsp(daisy::AudioHandle::InputBuffer in,
     } else {
         for (size_t i = 0; i < size; ++i) {
             const float g = outputVolume.Tick();
-            const float y = scratchWet[i] * g;
+            const float y = modelOutput[i] * g;
             out[0][i] = y;
             out[1][i] = y;
         }

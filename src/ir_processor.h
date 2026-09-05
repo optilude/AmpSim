@@ -11,13 +11,15 @@ public:
     static constexpr size_t kMaxIrSamples = 4096;
     static constexpr size_t kConvBlock = ConvolutionEngine::L;
     static constexpr size_t kMaxPartitions = kMaxIrSamples / kConvBlock;
+    static constexpr size_t kDeferredPartitionsPerCallback = 12;
 
     void init(float* irFreqBuf, float* fdlBuf) {
         convolution_.Init(kMaxPartitions, irFreqBuf, fdlBuf);
     }
 
     bool loadModel(const ModelEntry& model) {
-        if (model.type != ModelType::IrOnly || model.ir_item_count > kMaxIrSamples) {
+        if ((model.type != ModelType::IrOnly && model.type != ModelType::NamAndIr)
+            || model.ir_item_count > kMaxIrSamples) {
             return false;
         }
         const float* ir = reinterpret_cast<const float*>(model.ir_qspi_address);
@@ -42,17 +44,27 @@ public:
             convolution_.ProcessBlock(input, output, n);
             return;
         }
+
+        size_t deferredBudget = kDeferredPartitionsPerCallback;
+        deferredBudget -= convolution_.ProcessDeferred(deferredBudget);
+
+        bool startedBlock = false;
         for (size_t i = 0; i < n; ++i) {
             output[i] = outBlock_[blockIndex_];
             inBlock_[blockIndex_] = input[i];
             if (++blockIndex_ >= kConvBlock) {
-                convolution_.ProcessBlock(inBlock_, outBlock_, kConvBlock);
+                if (!convolution_.ProcessHead(inBlock_, outBlock_)) deferredScheduleMissed_ = true;
                 blockIndex_ = 0;
+                startedBlock = true;
             }
         }
+
+        if (startedBlock && deferredBudget > 0)
+            convolution_.ProcessDeferred(deferredBudget);
     }
 
     bool isLoaded() const { return loaded_; }
+    bool deferredScheduleMissed() const { return deferredScheduleMissed_; }
 
     // Rewind the overlap/FDL state but keep the loaded IR. This is what
     // re-enabling the model engine wants.
@@ -61,6 +73,7 @@ public:
         std::fill(inBlock_, inBlock_ + kConvBlock, 0.0f);
         std::fill(outBlock_, outBlock_ + kConvBlock, 0.0f);
         blockIndex_ = 0;
+        deferredScheduleMissed_ = false;
     }
 
     // Unload entirely. Used before loading a different model, and as part of
@@ -78,4 +91,5 @@ private:
     float outBlock_[kConvBlock]{};
     size_t blockIndex_ = 0;
     bool loaded_ = false;
+    bool deferredScheduleMissed_ = false;
 };

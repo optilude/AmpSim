@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-enum class ModelType : uint8_t { NamOnly = 0, IrOnly = 1 };
+enum class ModelType : uint8_t { NamOnly = 0, IrOnly = 1, NamAndIr = 2 };
 
 struct ModelEntry {
     ModelType type;
@@ -22,7 +22,7 @@ struct ModelEntry {
 };
 
 static constexpr int MAX_MODEL_COUNT = 128;
-static constexpr int MODEL_COUNT = 27;
+static constexpr int MODEL_COUNT = 29;
 static constexpr uintptr_t CAPTURE_DATA_QSPI_BASE = 0x900c1000;
 static constexpr uint32_t SETTINGS_QSPI_OFFSET = 0x000c0000;
 
@@ -54,4 +54,6 @@ static const ModelEntry model_entries[MODEL_COUNT] = {
     { ModelType::NamOnly, "Matchless Brave", "Match Brave Lo", CAPTURE_DATA_QSPI_BASE + 0x30328, 7484, 1871, -19.3857207f, 1, 0, 0, 0, 0x1feb9dc3 },
     { ModelType::NamOnly, "Princeton Deluxe", "V07 T6 B4 Bright", CAPTURE_DATA_QSPI_BASE + 0x32064, 7484, 1871, -16.3347469f, 1, 0, 0, 0, 0x8cda2ef2 },
     { ModelType::NamOnly, "Princeton Deluxe", "V10 T9 B2", CAPTURE_DATA_QSPI_BASE + 0x33da0, 7484, 1871, -16.0291502f, 1, 0, 0, 0, 0xd362f12b },
+    { ModelType::NamAndIr, "Twin Reverb", "Norm ch", CAPTURE_DATA_QSPI_BASE + 0x35adc, 7484, 1871, -16.991903f, 1, CAPTURE_DATA_QSPI_BASE + 0x37818, 16384, 4096, 0xf55f56e2 },
+    { ModelType::NamAndIr, "Twin Reverb", "Vibrato ch", CAPTURE_DATA_QSPI_BASE + 0x3b818, 7484, 1871, -15.5813883f, 1, CAPTURE_DATA_QSPI_BASE + 0x3d554, 16384, 4096, 0xe0824ef7 },
 };

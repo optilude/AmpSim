@@ -49,31 +49,67 @@ public:
             return;
         }
 
+        ProcessDeferred(numPartitions_);
+        ProcessHead(in, out);
+        ProcessDeferred(numPartitions_);
+    }
+
+    // Produce the block that is due now using H[0]. Contributions from older
+    // input blocks were accumulated into its slot by ProcessDeferred().
+    bool ProcessHead(const float* in, float* out) {
+        if (!prepared_ || numPartitions_ == 0) {
+            std::memcpy(out, in, L * sizeof(float));
+            return true;
+        }
+
+        // A caller must finish one block's deferred work before submitting the
+        // next. Complete it here as a correctness fallback; IRProcessor's
+        // callback scheduler normally keeps this path cold.
+        const bool deferredReady = !HasDeferredWork();
+        ProcessDeferred(numPartitions_);
+
         std::memcpy(inputBuf_, inputOverlap_, L * sizeof(float));
         std::memcpy(inputBuf_ + L, in, L * sizeof(float));
         std::memcpy(inputOverlap_, in, L * sizeof(float));
 
-        arm_rfft_fast_f32(&fftInst_, inputBuf_, scratchA_, 0);
-        std::memcpy(fdlAt(fdlIndex_), scratchA_, N * sizeof(float));
+        arm_rfft_fast_f32(&fftInst_, inputBuf_, inputFreq_, 0);
 
-        std::memset(accumFreq_, 0, sizeof(accumFreq_));
-        for (size_t p = 0; p < numPartitions_; ++p) {
-            const size_t fdlIdx = (fdlIndex_ + numPartitions_ - p) % numPartitions_;
-            arm_cmplx_mult_cmplx_f32(fdlAt(fdlIdx), irFreqAt(p), scratchB_, N / 2);
-            arm_add_f32(accumFreq_, scratchB_, accumFreq_, N);
-        }
+        deferredBaseIndex_ = outputIndex_;
+        MultiplyAccumulate(inputFreq_, irFreqAt(0), accumAt(outputIndex_));
 
-        arm_rfft_fast_f32(&fftInst_, accumFreq_, scratchA_, 1);
+        arm_rfft_fast_f32(&fftInst_, accumAt(outputIndex_), scratchA_, 1);
         std::memcpy(out, scratchA_ + L, L * sizeof(float));
+        std::memset(accumAt(outputIndex_), 0, N * sizeof(float));
 
-        fdlIndex_ = (fdlIndex_ + 1) % numPartitions_;
+        outputIndex_ = (outputIndex_ + 1) % numPartitions_;
+        deferredPartition_ = 1;
+        return deferredReady;
     }
+
+    // Push this input block's tail partitions into the frequency-domain
+    // accumulators for future output blocks. Calling this in slices spreads
+    // the O(IR length) work across audio callbacks.
+    size_t ProcessDeferred(size_t maxPartitions) {
+        if (!prepared_ || deferredPartition_ >= numPartitions_) return 0;
+
+        const size_t begin = deferredPartition_;
+        const size_t end = std::min(deferredPartition_ + maxPartitions, numPartitions_);
+        for (; deferredPartition_ < end; ++deferredPartition_) {
+            const size_t outputSlot = (deferredBaseIndex_ + deferredPartition_) % numPartitions_;
+            MultiplyAccumulate(inputFreq_, irFreqAt(deferredPartition_), accumAt(outputSlot));
+        }
+        return deferredPartition_ - begin;
+    }
+
+    bool HasDeferredWork() const { return deferredPartition_ < numPartitions_; }
 
     // Rewind the running state, keeping the prepared IR spectrum.
     void Reset() {
         std::memset(inputOverlap_, 0, sizeof(inputOverlap_));
         if (fdl_) std::memset(fdl_, 0, maxPartitions_ * N * sizeof(float));
-        fdlIndex_ = 0;
+        outputIndex_ = 0;
+        deferredBaseIndex_ = 0;
+        deferredPartition_ = numPartitions_;
     }
 
     // Drop the prepared IR as well. Reset() alone leaves irFreq_ intact, so a
@@ -87,12 +123,19 @@ public:
 
 private:
     float* irFreqAt(size_t partition) { return irFreq_ + partition * N; }
-    float* fdlAt(size_t partition) { return fdl_ + partition * N; }
+    float* accumAt(size_t partition) { return fdl_ + partition * N; }
+
+    void MultiplyAccumulate(const float* inputFreq, const float* irFreq, float* accumulator) {
+        arm_cmplx_mult_cmplx_f32(inputFreq, irFreq, scratchB_, N / 2);
+        arm_add_f32(accumulator, scratchB_, accumulator, N);
+    }
 
     arm_rfft_fast_instance_f32 fftInst_{};
     size_t maxPartitions_ = 0;
     size_t numPartitions_ = 0;
-    size_t fdlIndex_ = 0;
+    size_t outputIndex_ = 0;
+    size_t deferredBaseIndex_ = 0;
+    size_t deferredPartition_ = 0;
     bool prepared_ = false;
     float inputOverlap_[L]{};
 
@@ -100,7 +143,7 @@ private:
     // members of the (global) IRProcessor they land in .bss, which this
     // linker script maps to DTCMRAM -- both faster and off the ISR stack.
     float inputBuf_[N]{};
-    float accumFreq_[N]{};
+    float inputFreq_[N]{};
     float scratchA_[N]{};
     float scratchB_[N]{};
 

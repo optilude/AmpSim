@@ -173,9 +173,12 @@ make
 2. **Add to Models folder:**
    ```bash
    mkdir -p "Models/My Amp"
-   cp ~/Downloads/my_amp.nam "Models/My Amp/"
-   cp ~/Downloads/my_cab.wav "Models/My Amp/"
+   cp ~/Downloads/my_amp.nam "Models/My Amp/Clean.nam"
+   cp ~/Downloads/my_cab.wav "Models/My Amp/Clean.wav"
    ```
+
+   Matching basenames create one combined model that runs NAM into IR. A
+   combined model forces the Simple reverb engine while reverb is active.
 
 3. **Convert and rebuild:**
    ```bash
@@ -193,6 +196,7 @@ make
 The conversion tool accepts:
 - Exact NAM A2 Lite models: WaveNet, 3 channels, 23 layers, 1871 weights
 - 48 kHz mono/stereo WAV cabinet IRs, normalized and stored as 4096-sample models
+- Same-directory, same-basename NAM+IR pairs as one combined model
 - Up to 128 total models
 
 It emits `build/capture_data.bin`, `src/capture_index.h`, and `build/capture_data.map`.

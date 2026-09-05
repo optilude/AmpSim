@@ -121,10 +121,10 @@ int main() {
     NAMProcessor proc;
     proc.setSampleRate(48000.0);
     
-    // Find the first NAM model to test
+    // Find the first model with a NAM payload to test.
     const ModelEntry* firstNam = nullptr;
     for (const ModelEntry& entry : desktopEntries) {
-        if (entry.type == ModelType::NamOnly) {
+        if (entry.nam_byte_count > 0) {
             firstNam = &entry;
             break;
         }
@@ -170,9 +170,12 @@ int main() {
     }
     printf("[PASS] Block processed, output range [%.3f, %.3f]\n", mn, mx);
 
-    // All generated NAM captures should load and produce finite output.
+    // All generated NAM captures, including paired NAM+IR entries, should
+    // load and produce finite output.
+    bool sawCombined = false;
     for (int modelIndex = 0; modelIndex < MODEL_COUNT; ++modelIndex) {
         if (desktopEntries[modelIndex].type == ModelType::IrOnly) continue;
+        if (desktopEntries[modelIndex].type == ModelType::NamAndIr) sawCombined = true;
         if (!proc.loadModel(desktopEntries[modelIndex])) {
             fprintf(stderr, "[FAIL] generated model %d failed to load\n", modelIndex);
             return 1;
@@ -187,6 +190,11 @@ int main() {
         }
     }
     printf("[PASS] All generated models load and produce finite bounded output\n");
+    if (!sawCombined) {
+        fprintf(stderr, "[FAIL] no combined NAM+IR model in capture index\n");
+        return 1;
+    }
+    printf("[PASS] Combined NAM+IR metadata loads in the NAM processor\n");
 
     bool sawIr = false;
     for (int i = 0; i < MODEL_COUNT; ++i) {

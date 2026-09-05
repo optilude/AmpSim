@@ -16,6 +16,7 @@ test_reverb
 test_settings
 test_eq
 test_ir
+test_callback_noise_filter
 
 # Keep only the curated capture directories under version control.
 /Models/*

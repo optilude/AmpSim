@@ -67,6 +67,12 @@ g++ $DESKTOP_CXXFLAGS \
 ./test_ir
 echo ""
 
+# 3c. Callback-noise notch filter --------------------------------------------
+echo "Test 3c: Callback-noise notch filter"
+g++ $DESKTOP_CXXFLAGS -o test_callback_noise_filter test_callback_noise_filter.cpp
+./test_callback_noise_filter
+echo ""
+
 # 4. Daisy build --------------------------------------------------------------
 echo "Test 4: Daisy build"
 make clean > /dev/null 2>&1 || true

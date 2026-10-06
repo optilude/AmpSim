@@ -39,6 +39,7 @@
 #include "constants.h"
 #include "float_guard.h"
 #include "helpers.h"
+#include "midi_control.h"
 #include "util/CpuLoadMeter.h"
 
 #include <string.h>
@@ -112,6 +113,14 @@ int32_t muteOffTransitionSamples = 0;
 // Set by the audio callback when the encoder is clicked. Loading a model reads
 // QSPI and paints the display, so it has to happen on the main loop.
 volatile int pendingLoadIndex = -1;
+volatile bool pendingLoadEnableNam = false;
+
+// MIDI receive is serviced in the main loop. DSP changes are coalesced here
+// and consumed by the audio callback; raw bytes take a separate path to MIDI
+// OUT so forwarding remains transparent to running status and SysEx.
+midi_control::PendingState pendingMidiState;
+midi_control::RawThruBuffer<2048> midiThruBuffer;
+midi_control::KnobTakeover midiKnobTakeover[midi_control::kParameterCount];
 
 void SaveSettingsDebounced();
 
@@ -151,6 +160,10 @@ bool reverbBeforeFs2Press = false;       // undoes FS2's instant toggle if the h
 static const char* const kMonoOutOptions[] = {"Off", "On"};
 static const char* const kBypassOptions[] = {"True", "Direct", "Mono>Str"};
 static const char* const kReverbEngineOptions[] = {"Plate", "Simple"};
+static const char* const kMidiChannelOptions[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "10", "11", "12", "13", "14", "15", "16", "Omni",
+};
 static const char* const kResetOptions[] = {"Cancel", "Confirm"};
 
 struct SettingsMenuItem {
@@ -163,6 +176,7 @@ static const SettingsMenuItem kSettingsMenu[] = {
     {"Mono out", kMonoOutOptions,       2},
     {"Bypass",   kBypassOptions,        3},
     {"Reverb",   kReverbEngineOptions,  2},
+    {"MIDI Ch",  kMidiChannelOptions,  17},
     {"Reset",    kResetOptions,         2},
     {"Back",     nullptr,               0},
 };
@@ -174,7 +188,8 @@ static int GetMenuItemValue(int item) {
         case 0: return currentSettings->monoOutput ? 1 : 0;
         case 1: return currentSettings->bufferedBypassMode;
         case 2: return currentSettings->reverbEngine;
-        case 3: return 1;  // Reset defaults to Confirm: click, click resets
+        case 3: return currentSettings->midiChannel;
+        case 4: return 1;  // Reset defaults to Confirm: click, click resets
         default: return 0;
     }
 }
@@ -195,6 +210,10 @@ static void CommitMenuItemValue(int item, int value) {
             SaveSettingsDebounced();
             break;
         case 3:
+            currentSettings->midiChannel = (uint8_t)value;
+            SaveSettingsDebounced();
+            break;
+        case 4:
             if (value == 1) pendingReset = true;
             break;
         default:
@@ -207,6 +226,7 @@ static void EnterSettingsMode() {
     isPreviewingModel = false;
     isInspectingCurrentModel = false;
     pendingLoadIndex = -1;
+    pendingLoadEnableNam = false;
     settingsCursor = 0;
     uiMode = UiMode::SettingsMenu;
 }
@@ -257,6 +277,10 @@ float currentReverbMixKnob = 0.3f;
 float currentBassKnob = 0.5f;
 float currentMidKnob = 0.5f;
 float currentTrebleKnob = 0.5f;
+
+static void HandleRawMidiBytes(const uint8_t* data, size_t size, void*) {
+    midiThruBuffer.Push(data, size);
+}
 
 // Which knob (if any) was most recently turned, and when. The display uses
 // this to show a transient name/value overlay instead of the model screen;
@@ -439,14 +463,22 @@ static void DrawSettingsScreen() {
     hw.display.SetCursor(0, 0);
     hw.display.WriteString("SETTINGS", Font_7x10, true);
 
-    for (int i = 0; i < kSettingsMenuCount; ++i) {
-        const SettingsMenuItem& item = kSettingsMenu[i];
-        const bool onCursor = (i == settingsCursor);
+    static constexpr int kVisibleSettingsRows = 5;
+    int firstItem = settingsCursor - (kVisibleSettingsRows - 1);
+    if (firstItem < 0) firstItem = 0;
+    const int maxFirstItem = kSettingsMenuCount - kVisibleSettingsRows;
+    if (firstItem > maxFirstItem) firstItem = maxFirstItem;
+
+    for (int row = 0; row < kVisibleSettingsRows; ++row) {
+        const int itemIndex = firstItem + row;
+        if (itemIndex >= kSettingsMenuCount) break;
+        const SettingsMenuItem& item = kSettingsMenu[itemIndex];
+        const bool onCursor = (itemIndex == settingsCursor);
         const bool editingThis = onCursor && uiMode == UiMode::SettingsEdit;
 
         char valueBuf[16] = "";
         if (item.options != nullptr) {
-            const int value = editingThis ? settingsEditValue : GetMenuItemValue(i);
+            const int value = editingThis ? settingsEditValue : GetMenuItemValue(itemIndex);
             if (editingThis) {
                 snprintf(valueBuf, sizeof valueBuf, "[%s]", item.options[value]);
             } else {
@@ -454,7 +486,7 @@ static void DrawSettingsScreen() {
             }
         }
 
-        hw.display.SetCursor(0, 14 + i * 10);
+        hw.display.SetCursor(0, 14 + row * 10);
         snprintf(line, sizeof line, "%c%-9s %10s",
                  onCursor ? '>' : ' ', item.name, valueBuf);
         hw.display.WriteString(line, Font_6x8, true);
@@ -674,11 +706,11 @@ bool IsValidModelIndex(int index) {
 // Load a model by index. Suppresses audio for the duration so we don't
 // glitch. Preserves the previously loaded model on failure by not touching
 // currentSettings->modelIndex until success is confirmed.
-void LoadModel(int index) {
+bool LoadModel(int index) {
     if (!IsValidModelIndex(index)) {
         ShowMessage("Invalid model");
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
-        return;
+        return false;
     }
 
     const ModelEntry& entry = model_entries[index];
@@ -701,7 +733,7 @@ void LoadModel(int index) {
         snprintf(l3, sizeof l3, "want %08lx", (unsigned long)entry.crc32);
         ShowMessage("Bad model data", l1, l2, l3);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
-        return;
+        return false;
     }
 
     // Silence the DSP while the model state is swapped, but keep the callback
@@ -726,13 +758,15 @@ void LoadModel(int index) {
         ShowMessage("Load failed", entry.variant_name);
         hw.DelayMs(ERROR_DISPLAY_TIME_MS);
         // Keep the old model index and the previous loaded model.
-        return;
+        return false;
     }
 
     if (currentSettings->modelIndex != index) {
         currentSettings->modelIndex = index;
         SaveSettingsDebounced();
     }
+    dspFaultLatched = false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -786,6 +820,7 @@ void HandleEncoder() {
                 // timeout races with this callback we still load what the
                 // user saw. Loading reads QSPI and paints the display, so
                 // hand it to the main loop rather than doing it here.
+                pendingLoadEnableNam = false;
                 pendingLoadIndex = previewModelIndex;
                 isPreviewingModel = false;
             } else if (click) {
@@ -838,6 +873,34 @@ void HandleEncoder() {
     }
 }
 
+static void SetReverbEnabled(bool enabled) {
+    if ((currentSettings->reverbEnabled != 0) == enabled) return;
+    currentSettings->reverbEnabled = enabled ? 1 : 0;
+    reverbTailBlocks = enabled ? 0 : reverbTailBlocksFull;
+    SaveSettingsDebounced();
+}
+
+static void SetNamEnabled(bool enabled) {
+    if ((currentSettings->namEnabled != 0) == enabled) return;
+    if (enabled) {
+        if (dspFaultLatched) {
+            dspFaultLatched = false;
+            pendingLoadEnableNam = false;
+            pendingLoadIndex = currentSettings->modelIndex;
+        }
+        namProcessor.reset();
+        irProcessor.resetState();
+        eq.Reset();
+        cpuOverloadTripped = false;
+        loadMeter.Reset();
+        overloadWarmupBlocks = CPU_LOAD_WARMUP_BLOCKS;
+        overloadGraceBlocks = CPU_OVERLOAD_GRACE_BLOCKS;
+        overloadStreakBlocks = 0;
+    }
+    currentSettings->namEnabled = enabled ? 1 : 0;
+    SaveSettingsDebounced();
+}
+
 void HandleFootswitches() {
     // switches[0] (FS2 on the enclosure): Reverb on/off, or the tuner on a
     // 2-second hold. FS2 keeps its instant toggle-on-press feel; a hold that
@@ -849,14 +912,7 @@ void HandleFootswitches() {
             fs2LongPressFired = true;  // suppress immediate re-entry this hold
         } else {
             reverbBeforeFs2Press = currentSettings->reverbEnabled;
-            currentSettings->reverbEnabled = !currentSettings->reverbEnabled;
-            if (currentSettings->reverbEnabled) {
-                reverbTailBlocks = 0;
-            } else {
-                // Let the tail ring out, then stop paying for the reverb.
-                reverbTailBlocks = reverbTailBlocksFull;
-            }
-            SaveSettingsDebounced();
+            SetReverbEnabled(!currentSettings->reverbEnabled);
         }
     }
 
@@ -865,9 +921,7 @@ void HandleFootswitches() {
         fs2LongPressFired = true;
 
         // Undo the instant toggle the press fired on its way in.
-        currentSettings->reverbEnabled = reverbBeforeFs2Press;
-        reverbTailBlocks = currentSettings->reverbEnabled ? 0 : reverbTailBlocksFull;
-        SaveSettingsDebounced();
+        SetReverbEnabled(reverbBeforeFs2Press);
 
         tuner.reset();
         tunerMode = true;
@@ -877,28 +931,7 @@ void HandleFootswitches() {
 
     // switches[1] (FS1 on the enclosure): model engine on/off
     if (hw.switches[1].RisingEdge()) {
-        const bool enabling = !currentSettings->namEnabled;
-        if (enabling) {
-            if (dspFaultLatched) {
-                // Recovery dropped the IR spectrum, so a rewind is not enough:
-                // ask the main loop to reload the model from QSPI (which
-                // re-verifies its CRC).
-                dspFaultLatched = false;
-                pendingLoadIndex = currentSettings->modelIndex;
-            }
-            namProcessor.reset();
-            irProcessor.resetState();
-            eq.Reset();
-            cpuOverloadTripped = false;
-            loadMeter.Reset();
-            overloadWarmupBlocks = CPU_LOAD_WARMUP_BLOCKS;
-            overloadGraceBlocks = CPU_OVERLOAD_GRACE_BLOCKS;
-            overloadStreakBlocks = 0;
-            currentSettings->namEnabled = 1;
-        } else {
-            currentSettings->namEnabled = 0;
-        }
-        SaveSettingsDebounced();
+        SetNamEnabled(!currentSettings->namEnabled);
     }
 }
 
@@ -918,33 +951,93 @@ static inline void NoteKnobActivity(ActiveKnob knob) {
 }
 
 void HandleKnobs() {
-    if (UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob)) {
+    if (midiKnobTakeover[0].ShouldApplyPhysical(hw.knobs[0].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[0].Value(), currentInputGainKnob)) {
         inputGain.SetGain(KnobToNormalized(currentInputGainKnob));
         NoteKnobActivity(ActiveKnob::InputGain);
     }
-    if (UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob)) {
+    if (midiKnobTakeover[1].ShouldApplyPhysical(hw.knobs[1].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[1].Value(), currentOutputVolumeKnob)) {
         outputVolume.SetGain(KnobToNormalized(currentOutputVolumeKnob));
         NoteKnobActivity(ActiveKnob::OutputVolume);
     }
-    if (UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob)) {
+    if (midiKnobTakeover[2].ShouldApplyPhysical(hw.knobs[2].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[2].Value(), currentReverbMixKnob)) {
         // Both engines track the same knob so switching engines in the
         // Settings menu doesn't need to re-apply Mix.
         reverbProcessor.setMix(currentReverbMixKnob);
         simpleReverbProcessor.setMix(currentReverbMixKnob);
         NoteKnobActivity(ActiveKnob::ReverbMix);
     }
-    if (UpdateKnob(hw.knobs[3].Value(), currentBassKnob)) {
+    if (midiKnobTakeover[3].ShouldApplyPhysical(hw.knobs[3].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[3].Value(), currentBassKnob)) {
         eq.SetBass(KnobToNormalized(currentBassKnob));
         NoteKnobActivity(ActiveKnob::Bass);
     }
-    if (UpdateKnob(hw.knobs[4].Value(), currentMidKnob)) {
+    if (midiKnobTakeover[4].ShouldApplyPhysical(hw.knobs[4].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[4].Value(), currentMidKnob)) {
         eq.SetMid(KnobToNormalized(currentMidKnob));
         NoteKnobActivity(ActiveKnob::Mid);
     }
-    if (UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob)) {
+    if (midiKnobTakeover[5].ShouldApplyPhysical(hw.knobs[5].Value(), KNOB_DEADBAND)
+        && UpdateKnob(hw.knobs[5].Value(), currentTrebleKnob)) {
         eq.SetTreble(KnobToNormalized(currentTrebleKnob));
         NoteKnobActivity(ActiveKnob::Treble);
     }
+}
+
+static void ApplyMidiParameter(midi_control::Parameter parameter, float value) {
+    const size_t index = static_cast<size_t>(parameter);
+    midiKnobTakeover[index].SetMidiControlled(hw.knobs[index].Value());
+    switch (parameter) {
+        case midi_control::Parameter::InputGain:
+            currentInputGainKnob = value;
+            inputGain.SetGain(KnobToNormalized(value));
+            NoteKnobActivity(ActiveKnob::InputGain);
+            break;
+        case midi_control::Parameter::OutputVolume:
+            currentOutputVolumeKnob = value;
+            outputVolume.SetGain(KnobToNormalized(value));
+            NoteKnobActivity(ActiveKnob::OutputVolume);
+            break;
+        case midi_control::Parameter::ReverbMix:
+            currentReverbMixKnob = value;
+            reverbProcessor.setMix(value);
+            simpleReverbProcessor.setMix(value);
+            NoteKnobActivity(ActiveKnob::ReverbMix);
+            break;
+        case midi_control::Parameter::Bass:
+            currentBassKnob = value;
+            eq.SetBass(KnobToNormalized(value));
+            NoteKnobActivity(ActiveKnob::Bass);
+            break;
+        case midi_control::Parameter::Mid:
+            currentMidKnob = value;
+            eq.SetMid(KnobToNormalized(value));
+            NoteKnobActivity(ActiveKnob::Mid);
+            break;
+        case midi_control::Parameter::Treble:
+            currentTrebleKnob = value;
+            eq.SetTreble(KnobToNormalized(value));
+            NoteKnobActivity(ActiveKnob::Treble);
+            break;
+    }
+}
+
+static void ApplyPendingMidi() {
+    midi_control::PendingSnapshot snapshot;
+    {
+        daisy::ScopedIrqBlocker block;
+        snapshot = pendingMidiState.Consume();
+    }
+    for (size_t i = 0; i < midi_control::kParameterCount; ++i) {
+        if (snapshot.parameterPending[i]) {
+            ApplyMidiParameter(static_cast<midi_control::Parameter>(i),
+                               snapshot.parameterValues[i]);
+        }
+    }
+    if (snapshot.namPending) SetNamEnabled(snapshot.namEnabled);
+    if (snapshot.reverbPending) SetReverbEnabled(snapshot.reverbEnabled);
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1200,7 @@ void AudioCallback(daisy::AudioHandle::InputBuffer in,
     hw.ProcessAnalogControls();
     hw.ProcessDigitalControls();
     HandleKnobs();
+    ApplyPendingMidi();
     // Footswitches are ignored in settings mode: toggling an effect the menu
     // screen isn't showing would be silently confusing.
     if (!InSettingsMode()) HandleFootswitches();
@@ -1180,13 +1274,86 @@ void CheckPreviewTimeout() {
     }
 }
 
+static void QueueModelLoad(int index, bool enableNam) {
+    daisy::ScopedIrqBlocker block;
+    pendingLoadEnableNam = enableNam;
+    pendingLoadIndex = index;
+}
+
+static void QueueNamEnabled(bool enabled) {
+    daisy::ScopedIrqBlocker block;
+    pendingMidiState.SetNamEnabled(enabled);
+}
+
+static void HandleMidiAction(const midi_control::Action& action) {
+    switch (action.type) {
+        case midi_control::ActionType::SelectModel:
+            isPreviewingModel = false;
+            isInspectingCurrentModel = false;
+            previewModelIndex = action.modelIndex;
+            if (action.modelIndex == currentSettings->modelIndex && !dspFaultLatched) {
+                QueueModelLoad(-1, false);
+                QueueNamEnabled(true);
+            } else {
+                QueueModelLoad(action.modelIndex, true);
+            }
+            break;
+        case midi_control::ActionType::SetParameter: {
+            daisy::ScopedIrqBlocker block;
+            pendingMidiState.SetParameter(action.parameter, action.normalizedValue);
+            break;
+        }
+        case midi_control::ActionType::SetReverbEnabled: {
+            daisy::ScopedIrqBlocker block;
+            pendingMidiState.SetReverbEnabled(action.enabled);
+            break;
+        }
+        case midi_control::ActionType::None:
+            break;
+    }
+}
+
+static void ServiceMidi() {
+    hw.midi.Listen();
+    while (hw.midi.HasEvents()) {
+        daisy::MidiEvent event = hw.midi.PopEvent();
+        midi_control::MessageType type = midi_control::MessageType::Other;
+        if (event.type == daisy::MidiMessageType::ControlChange)
+            type = midi_control::MessageType::ControlChange;
+        else if (event.type == daisy::MidiMessageType::ProgramChange)
+            type = midi_control::MessageType::ProgramChange;
+
+        HandleMidiAction(midi_control::Translate(type,
+                                                 event.channel,
+                                                 event.data[0],
+                                                 event.data[1],
+                                                 currentSettings->midiChannel,
+                                                 MODEL_COUNT));
+    }
+
+    uint8_t bytes[16];
+    size_t count;
+    {
+        daisy::ScopedIrqBlocker block;
+        count = midiThruBuffer.Pop(bytes, sizeof bytes);
+    }
+    if (count > 0) hw.midi.SendMessage(bytes, count);
+}
+
 // The encoder click asked for a model swap. Loading paints the display and
 // reads QSPI, neither of which belongs on the audio thread.
 void HandlePendingLoad() {
-    const int target = pendingLoadIndex;
+    int target;
+    bool enableNam;
+    {
+        daisy::ScopedIrqBlocker block;
+        target = pendingLoadIndex;
+        enableNam = pendingLoadEnableNam;
+        pendingLoadIndex = -1;
+        pendingLoadEnableNam = false;
+    }
     if (target < 0) return;
-    pendingLoadIndex = -1;
-    LoadModel(target);
+    if (LoadModel(target) && enableNam) QueueNamEnabled(true);
 }
 
 // Recover from a non-finite sample reported by the audio thread. Everything
@@ -1372,12 +1539,16 @@ int main(void) {
     }
     HandleKnobs();
 
+    hw.midi.SetRawRxCallback(HandleRawMidiBytes, nullptr);
+    hw.midi.StartReceive();
+
     // From here the audio callback owns the controls, the LEDs and the relay.
     // The main loop must not touch them.
     hw.StartAudio(AudioCallback);
 
     while (true) {
         HandlePendingReset();
+        ServiceMidi();
         HandlePendingLoad();
         CheckPreviewTimeout();
         HandleDspFault();

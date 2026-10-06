@@ -18,6 +18,7 @@ AmpSim combines neural amp modeling with studio-quality reverb in a compact peda
 - **Rotary Encoder**: Browse and select from multiple amp models
 - **State Persistence**: Selected capture and effect states are saved between restarts.
 - **Stereo Output**: Or mono, selectable via the settings menu.
+- **MIDI Control and Thru**: Recall models and all six panel parameters from a loop switcher.
 
 ## Hardware
 
@@ -30,7 +31,7 @@ Built on the bkshepherd 125B PCB with Daisy Seed:
 - **Rotary Encoder** with push button for model selection
 - **6 Potentiometers** for real-time control
 - **Stereo Audio I/O** (mono input, stereo output)
-- **MIDI I/O** (future expansion)
+- **MIDI In and software Thru**
 - **True Bypass Relay** with mute circuit
 
 See [hardware build instructions](https://github.com/bkshepherd/DaisySeedProjects/blob/main/Hardware/GuitarPedal125b/docs/README.md) for details of how to order the PCB and assemble the hardware.
@@ -65,6 +66,15 @@ The bottom three knobs are a three-band EQ: Bass, Middle, Treble. At noon, the E
 **Bypass**
 
 By default, the pedal operates with true stereo bypass. You can enable buffered bypass or buffered mono-to-stereo (dual mono) in the settings menu.
+
+**MIDI:**
+
+Program Change selects an amp model and enables the model engine. CC16-21
+control the six knobs in panel order, while CC23 switches reverb off/on. The
+receive channel is selectable from 1-16 or Omni in the settings menu. MIDI OUT
+always forwards the complete incoming byte stream for chaining other pedals.
+See [docs/MIDI.md](docs/MIDI.md) for the definitive mapping and loop-switcher
+setup notes.
 
 ## Signal Chain
 

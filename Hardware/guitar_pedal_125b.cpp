@@ -228,7 +228,7 @@ void GuitarPedal125B::InitLeds(int count, Pin pins[]) {
 }
 
 void GuitarPedal125B::InitMidi(Pin rxPin, Pin txPin) {
-    MidiUartHandler::Config midi_config;
+    MidiUartThruHandler::Config midi_config;
     midi_config.transport_config.rx = rxPin;
     midi_config.transport_config.tx = txPin;
     midi.Init(midi_config);

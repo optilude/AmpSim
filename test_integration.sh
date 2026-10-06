@@ -1,7 +1,7 @@
 #!/bin/bash
 # Desktop + build integration tests.
 #
-# Runs three desktop test suites (NAM, reverb, EQ), builds the Daisy
+# Runs the desktop test suites, builds the Daisy
 # firmware, and checks binary sizes. Meant to be run before every commit.
 
 set -euo pipefail
@@ -23,7 +23,8 @@ NAM_CXXFLAGS="$DESKTOP_CXXFLAGS \
   -INeuralAmpModelerCore/Dependencies/nlohmann"
 
 echo "Test 0: Capture conversion"
-rm -f test_nam test_reverb test_eq build/AmpSim.bin build/AmpSim.elf
+rm -f test_nam test_reverb test_eq test_ir test_callback_noise_filter test_midi \
+  build/AmpSim.bin build/AmpSim.elf
 python3 tools/build_capture_blob.py Models/ --out-bin build/capture_data.bin --out-header src/capture_index.h --out-map build/capture_data.map
 echo ""
 
@@ -71,6 +72,12 @@ echo ""
 echo "Test 3c: Callback-noise notch filter"
 g++ $DESKTOP_CXXFLAGS -o test_callback_noise_filter test_callback_noise_filter.cpp
 ./test_callback_noise_filter
+echo ""
+
+# 3d. MIDI control -----------------------------------------------------------
+echo "Test 3d: MIDI control"
+g++ $DESKTOP_CXXFLAGS -o test_midi test_midi.cpp src/midi_control.cpp
+./test_midi
 echo ""
 
 # 4. Daisy build --------------------------------------------------------------

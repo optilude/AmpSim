@@ -4,6 +4,7 @@
 
 #include "daisy_seed.h"
 #include "dev/oled_ssd130x.h"
+#include "midi_uart_handler.h"
 #include <vector>
 
 using namespace daisy;
@@ -81,7 +82,7 @@ class GuitarPedal125B {
     std::vector<Encoder> encoders;
     std::vector<Led> leds;
 
-    MidiUartHandler midi;
+    MidiUartThruHandler midi;
     MyOledDisplay display;
     GPIO audioBypassTrigger;
     GPIO audioMuteTrigger;

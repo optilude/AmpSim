@@ -81,6 +81,20 @@ NAM OFF + Rev OFF → True Bypass              → Relay ON
 
 **Rationale**: Allows independent control of NAM and Reverb while maintaining true analog bypass when both effects are disabled.
 
+## MIDI Control
+
+The board's UART MIDI handler uses D30 for RX and D29 for TX at the standard
+31,250 baud. A raw receive observer copies bytes into a bounded thru buffer
+before libDaisy parses them. The main loop drains that buffer to MIDI OUT, so
+running status, realtime interleaving, unsupported messages, and long SysEx are
+forwarded without reconstructing events.
+
+Parsed Program Change and CC events pass through the configured channel filter.
+The main loop performs model loads and coalesces parameter/effect commands;
+the audio callback consumes those commands and mutates DSP state. This keeps
+QSPI and polling UART transmission out of the audio interrupt while preserving
+single-threaded ownership of gain, EQ, and reverb processors.
+
 ## Memory Architecture
 
 ### Measured memory usage (2 A2-Lite captures, 48 kHz)
@@ -146,15 +160,14 @@ would overlap/overflow.
 ### Single-Threaded Firmware
 - **Audio Callback**: Runs on interrupt (highest priority)
   - 48kHz sample rate
-  - 128 samples per callback (2.67 ms blocks)
-  - NAM internally processes 48-sample chunks; IR uses 128-sample partitions
-  - Must complete within 2.67 ms (~1.07M cycles at 400 MHz)
+  - 48 samples per callback (1 ms blocks)
+  - Reads panel controls and applies pending MIDI DSP commands
+  - Must complete within 1 ms (~400k cycles at 400 MHz)
   
 - **Main Loop**: Foreground task (lower priority)
-  - UI controls (knobs, switches, encoder)
+  - MIDI receive, software thru, and deferred model loads
   - Display updates (throttled to 30 FPS)
   - Settings persistence
-  - Non-blocking operations only
 
 ### No RTOS
 Bare-metal firmware for deterministic timing:
@@ -172,6 +185,7 @@ struct PersistentSettings {
     int32_t modelIndex;        // Current NAM model
     uint8_t namEnabled;        // NAM on/off
     uint8_t reverbEnabled;     // Reverb on/off
+    uint8_t midiChannel;       // 0-15 = channel 1-16, 16 = Omni
 };
 ```
 

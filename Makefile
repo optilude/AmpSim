@@ -15,6 +15,7 @@ OPT = -Ofast
 
 # Sources
 CPP_SOURCES = src/main.cpp \
+			  src/midi_control.cpp \
               src/nam_processor.cpp \
               src/reverb_arena.cpp \
               src/tuner_processor.cpp \

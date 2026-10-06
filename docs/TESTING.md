@@ -79,6 +79,30 @@ Before considering the firmware production-ready, verify all items on this check
   - Display reverts to current model
   - "->" prefix disappears
 
+### MIDI Testing
+
+- [ ] **Program and parameter recall**
+  - Configure the pedal and loop switcher for channel 1
+  - Send one preset containing Program Change, CC16-21, and CC23
+  - Verify the model loads, the model engine enables, and all levels match
+  - Verify CC values 0, 64, and 127 reach each documented endpoint
+
+- [ ] **Channel filter and Omni**
+  - Verify a channel 2 message is ignored while the pedal uses channel 1
+  - Select Omni and verify the same message is accepted
+  - Select channel 16 and verify channel 16 messages are accepted
+
+- [ ] **Physical takeover**
+  - Set each level over MIDI and leave its physical knob untouched
+  - Verify the remote value remains active
+  - Move the knob beyond the deadband and verify its absolute value takes over
+
+- [ ] **MIDI thru**
+  - Chain a second MIDI device after AmpSim
+  - Verify accepted and ignored channel messages both reach the second device
+  - Verify Program/Control Change bursts, MIDI clock, running status, and SysEx
+  - Send rapid preset changes and verify no messages are lost or reordered
+
 ### Bypass Behavior Testing
 
 - [ ] **NAM ON, Reverb OFF**
